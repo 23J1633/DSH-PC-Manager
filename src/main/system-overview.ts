@@ -59,6 +59,7 @@ async function windowsIsElevated(): Promise<boolean> {
 
 export async function systemOverview(homePath: string, quarantinePath: string): Promise<SystemOverview> {
   const rootPath = parse(homePath).root || homePath
+  const isSmokeSafeMetadata = process.env.DSH_PC_MANAGER_SMOKE_SAFE_METADATA === '1'
   let volumes: DiskVolume[] = []
   let isElevated = process.platform !== 'win32'
   if (process.platform === 'win32') {
@@ -73,10 +74,24 @@ export async function systemOverview(homePath: string, quarantinePath: string): 
       isElevated = false
     }
   }
+  if (isSmokeSafeMetadata) {
+    volumes = [
+      {
+        name: 'Windows',
+        root: 'C:\\',
+        totalBytes: 500 * 1024 ** 3,
+        freeBytes: 320 * 1024 ** 3,
+      },
+    ]
+  }
   return {
     rootPath,
-    hostname: hostname(),
-    platformLabel: process.platform === 'win32' ? `Windows ${release()}` : `${platform()} ${release()}`,
+    hostname: isSmokeSafeMetadata ? 'Example-PC' : hostname(),
+    platformLabel: isSmokeSafeMetadata
+      ? 'Windows 11'
+      : process.platform === 'win32'
+        ? `Windows ${release()}`
+        : `${platform()} ${release()}`,
     volumes,
     quarantinePath,
     isElevated,

@@ -12,6 +12,11 @@ import { systemOverview } from './system-overview.js'
 
 app.setName('DSH PC Manager')
 
+const smokeUserDataPath = process.env.DSH_PC_MANAGER_USER_DATA
+if (smokeUserDataPath !== undefined && smokeUserDataPath.trim().length > 0) {
+  app.setPath('userData', resolve(smokeUserDataPath))
+}
+
 const UI_ZOOM_BASE = 1.25
 
 let mainWindow: BrowserWindow | undefined
@@ -97,11 +102,12 @@ function createWindow(fontScale: number): BrowserWindow {
         void (async () => {
           let rendererReady = false
           for (let attempt = 0; attempt < 100; attempt += 1) {
-            rendererReady = await window.webContents.executeJavaScript("document.querySelector('.app-shell') !== null") as boolean
+            rendererReady = await window.webContents.executeJavaScript("document.querySelector('.app-shell') !== null && document.querySelector('.loading-screen') === null") as boolean
             if (rendererReady) break
             await new Promise(resolvePromise => setTimeout(resolvePromise, 100))
           }
           if (!rendererReady) throw new Error('Renderer did not become ready for smoke capture')
+          await new Promise(resolvePromise => setTimeout(resolvePromise, 500))
           const smokeClickSelector = process.env.DSH_PC_MANAGER_SMOKE_CLICK
           if (smokeClickSelector !== undefined && smokeClickSelector.length > 0) {
             const selector = JSON.stringify(smokeClickSelector)

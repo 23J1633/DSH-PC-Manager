@@ -35,6 +35,7 @@ deepseek-harness-master/
 
 # Local assets kept beside the source tree but never committed
 _local/
+GITHUB_UPLOAD.md
 
 # Local configuration and secrets
 .env
