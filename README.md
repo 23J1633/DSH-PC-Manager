@@ -17,8 +17,7 @@ Version 1.0.0 · Windows 10/11 · MIT License
   <img src="docs/screenshots/settings-about.png" width="49%" alt="DSH PC Manager about page" />
 </p>
 
-截图来自 v1.0.0 浅色主题演示构建，界面中的设备信息是脱敏示例数据。<br />
-The screenshots use the v1.0.0 light theme and sanitized example device data.
+
 
 ## 中文
 
