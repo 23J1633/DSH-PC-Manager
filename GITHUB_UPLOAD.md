@@ -7,8 +7,8 @@
 - 建议仓库名：`dsh-pc-manager`
 - 建议 Description：`Windows AI PC manager powered by DeepSeek Harness — scoped read-only scanning, safe cleanup review, and privacy-first desktop controls.`
 - 建议默认分支：`main`
-- 建议首个发布标签：`v0.3.0`
-- 建议 Release 标题：`DSH PC Manager v0.3.0`
+- 建议发布标签：`v1.0`
+- 建议 Release 标题：`DSH PC Manager v1.0`
 
 ### GitHub Topics
 
@@ -24,10 +24,10 @@
 
 本次整理保留的历史安装包已收纳到项目内的 `_local/release/`；`_local/` 整体被忽略，只用于本机保存 Release 和参考资料，不属于 GitHub 源码仓库。
 
-建议为 `v0.3.0` Release 上传：
+建议为 `v1.0` Release 上传：
 
-- 当前保留的安装包：`_local/release/DSH-PC-Manager-0.3.0-Setup.exe`
-- 当前保留的增量更新文件：`_local/release/DSH-PC-Manager-0.3.0-Setup.exe.blockmap`（需要增量更新时再上传）
+- 重新打包后的安装包：`release/DSH-PC-Manager-1.0.0-Setup.exe`
+- 重新打包后的增量更新文件：`release/DSH-PC-Manager-1.0.0-Setup.exe.blockmap`（需要增量更新时再上传）
 
 如果重新运行 `npm run package`，新的构建产物会出现在根目录 `release/`；该目录同样已被忽略。
 
@@ -41,7 +41,7 @@
 git init -b main
 git add .
 git commit -m "chore: prepare GitHub repository"
-git tag -a v0.3.0 -m "Release v0.3.0"
+git tag -a v1.0 -m "Release v1.0"
 ```
 
 添加自己的 GitHub 仓库地址后推送：
@@ -49,7 +49,7 @@ git tag -a v0.3.0 -m "Release v0.3.0"
 ```powershell
 git remote add origin https://github.com/<OWNER>/dsh-pc-manager.git
 git push -u origin main
-git push origin v0.3.0
+git push origin v1.0
 ```
 
 如果仓库已经存在远程地址，请先用 `git remote -v` 检查，避免把代码推到错误的仓库。

@@ -106,4 +106,4 @@ npm run package
 
 ## GitHub 发布
 
-建议仓库标签使用 `v0.3.0`，仓库 Topics 使用 `electron`、`react`、`typescript`、`vite`、`windows`、`desktop-app`、`ai`、`deepseek`、`deepseek-harness`、`computer-manager`、`disk-cleaner`、`virus-scanner`、`privacy` 和 `cybersecurity`。完整的仓库描述、发布附件清单和上传命令见 [`GITHUB_UPLOAD.md`](GITHUB_UPLOAD.md)。
+建议仓库标签使用 `v1.0`，仓库 Topics 使用 `electron`、`react`、`typescript`、`vite`、`windows`、`desktop-app`、`ai`、`deepseek`、`deepseek-harness`、`computer-manager`、`disk-cleaner`、`virus-scanner`、`privacy` 和 `cybersecurity`。完整的仓库描述、发布附件清单和上传命令见 [`GITHUB_UPLOAD.md`](GITHUB_UPLOAD.md)。

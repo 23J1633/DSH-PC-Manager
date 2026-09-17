@@ -1,6 +1,6 @@
 {
   "name": "dsh-pc-manager",
-  "version": "0.3.0",
+  "version": "1.0.0",
   "description": "AI computer manager powered by DeepSeek Harness",
   "keywords": [
     "electron",
