@@ -1,0 +1,49 @@
+# Dependencies
+node_modules/
+
+# Build outputs and packaged release artifacts
+dist/
+dist-electron/
+release/
+*.asar
+*.blockmap
+*.exe
+*.msi
+*.dmg
+*.deb
+*.rpm
+builder-debug.yml
+builder-effective-config.yaml
+
+# Local caches and generated test data
+.vite/
+.electron-builder-cache/
+.dsh-smoke/
+.dsh-smoke-v2-*/
+.tmp-dsh-debug/
+artifacts/
+coverage/
+test-results/
+playwright-report/
+*.tsbuildinfo
+*.log
+*.tmp
+*.temp
+
+# Optional local upstream/reference copy
+deepseek-harness-master/
+
+# Local assets kept beside the source tree but never committed
+_local/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.local
+*.local.json
+
+# Operating-system files
+.DS_Store
+Thumbs.db
+desktop.ini
