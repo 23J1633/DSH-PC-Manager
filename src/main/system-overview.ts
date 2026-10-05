@@ -42,7 +42,7 @@ function volumeRecord(value: unknown): DiskVolume | undefined {
 async function windowsVolumes(): Promise<DiskVolume[]> {
   const output = await powershell(`
 $ErrorActionPreference = 'Stop'
-Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" |
+Get-CimInstance Win32_LogicalDisk -Filter "DriveType=2 OR DriveType=3" |
   ForEach-Object { [pscustomobject]@{ Name=$_.VolumeName; Root=($_.DeviceID + '\\'); TotalBytes=[double]$_.Size; FreeBytes=[double]$_.FreeSpace } } |
   ConvertTo-Json -Compress
 `)
@@ -57,7 +57,7 @@ async function windowsIsElevated(): Promise<boolean> {
   return output.trim().toLocaleLowerCase() === 'true'
 }
 
-export async function systemOverview(homePath: string, quarantinePath: string): Promise<SystemOverview> {
+export async function systemOverview(homePath: string, quarantinePath = ''): Promise<SystemOverview> {
   const rootPath = parse(homePath).root || homePath
   const isSmokeSafeMetadata = process.env.DSH_PC_MANAGER_SMOKE_SAFE_METADATA === '1'
   let volumes: DiskVolume[] = []
@@ -75,6 +75,14 @@ export async function systemOverview(homePath: string, quarantinePath: string): 
     }
   }
   if (isSmokeSafeMetadata) {
+    const otherVolumes = volumes
+      .filter(volume => volume.root.toLocaleLowerCase() !== 'c:\\')
+      .map((volume, index) => ({
+        name: index === 0 ? 'Data' : `Local disk ${index + 1}`,
+        root: volume.root,
+        totalBytes: 500 * 1024 ** 3,
+        freeBytes: 320 * 1024 ** 3,
+      }))
     volumes = [
       {
         name: 'Windows',
@@ -82,6 +90,7 @@ export async function systemOverview(homePath: string, quarantinePath: string): 
         totalBytes: 500 * 1024 ** 3,
         freeBytes: 320 * 1024 ** 3,
       },
+      ...otherVolumes,
     ]
   }
   return {

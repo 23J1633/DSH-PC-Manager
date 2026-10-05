@@ -150,26 +150,46 @@ export interface CleanupPromptOptions {
   sourceScanKind: ScanKind
   risks: RiskItem[]
   instructions: CleanupInstruction[]
-  auditReport: CleanupAuditReport
+  auditReport?: CleanupAuditReport
+  relaxedPermissions?: boolean
 }
 
 export function cleanupPrompt(options: CleanupPromptOptions): string {
   const authorized = JSON.stringify(options.risks, null, 2)
-  const audit = JSON.stringify(options.auditReport, null, 2)
+  const audit = options.auditReport === undefined ? '本次由用户明确启用了放宽权限，跳过独立审核。' : JSON.stringify(options.auditReport, null, 2)
   const instructions = JSON.stringify(options.instructions, null, 2)
+  const safeCleanupIds = options.instructions.filter(instruction => instruction.mode === 'safe-clean').map(instruction => instruction.riskId)
+  const auditRule = options.relaxedPermissions === true && safeCleanupIds.length > 0
+    ? `本次虽启用了放宽权限，用户选择“安全清理”的项目仍经过只读审核。对这些项目，审核结论和 constraints 是安全边界而非跳过门禁；必须把拒绝理由当作限制，并在边界内尽力清理。其他项目按用户的放宽权限授权执行。所有项目仍限于用户勾选目标。`
+    : options.relaxedPermissions === true
+    ? '9. 用户已明确启用放宽权限；本次没有独立审核报告。仍只能操作用户勾选的项目，不能扩展到其他目标。'
+    : safeCleanupIds.length > 0
+      ? '9. 独立只读审核 Agent 已先行审查。普通方案必须获得 allow；“安全清理”项目无论 allow、deny 或 manual 都必须进入本次执行，审核 reason 和 constraints 是不可突破的安全边界，不是静默跳过理由。现场证据与审核范围冲突时不得越界，并将该项标记为 failed。'
+      : '9. 独立只读审核 Agent 已先行审查。必须遵守其逐项 constraints；审核报告不能扩大用户授权，若现场情况与审核依据不一致则跳过。'
+  const actionRule = safeCleanupIds.length > 0
+    ? `10. 用户处理方案是明确意图：recommended 表示可采用扫描建议；quarantine 表示只能采用可恢复的隔离；manual 表示只可执行 instruction 中明确描述的动作；safe-clean（项目 id：${JSON.stringify(safeCleanupIds)}）表示必须在安全边界内最大限度清理用户选中的精确目标。先执行审核允许的可行范围；目标明确、确属可清理对象且审核约束允许时，可以清除目标本身，不得扩大到相邻路径、外部链接或未授权对象。优先使用官方清理方式处理应用缓存。safe-clean 项目不得返回 skipped；如果重新核验后确实没有任何安全可行的清理动作，返回 failed 并说明阻断条件，不能静默跳过。`
+    : options.relaxedPermissions === true
+      ? '10. 用户处理方案是明确意图：recommended 表示可采用扫描建议；quarantine 表示只能采用可恢复的隔离；manual 表示执行 instruction 中明确描述的动作。若 instruction 明确要求永久删除指定 target，可以精确删除该目标；不得递归扩大、使用通配符或触及未授权对象。含糊或范围过大的请求应先询问。'
+      : '10. 用户处理方案是明确意图：recommended 表示可采用扫描建议；quarantine 表示只能采用可恢复的隔离，不得永久删除；manual 表示只可执行 instruction 中明确描述且审核放行的动作。无法安全满足时必须跳过。'
+  const targetRule = safeCleanupIds.length > 0
+    ? '2. 动手前逐项重新读取当前状态，确认路径、进程、签名/哈希或配置仍与扫描证据一致。safe-clean 项目必须尝试处理所有仍匹配且边界明确的目标；若目标变化、证据不足或对象属于系统关键部分，保持安全并将该项标记为 failed，不得返回 skipped。'
+    : '2. 动手前逐项重新读取当前状态，确认路径、进程、签名/哈希或配置仍与扫描证据一致。目标变化、证据不足、系统关键对象、范围含糊或风险大于收益时必须跳过。'
+  const reversibilityRule = safeCleanupIds.length > 0
+    ? `3. 普通方案默认可逆，普通文件优先移动到隔离区 ${options.quarantinePath}，保留原路径映射并在隔离区写入本次 manifest。safe-clean 项目则应在审核边界内最大限度清理所选目标；仅在精确目标已核实、确认不属于系统/应用关键对象且 constraints 允许时才永久删除。未知目录、目录联接点和符号链接不得把操作扩展到授权范围之外。`
+    : `3. 默认可逆。普通文件优先移动到隔离区 ${options.quarantinePath}，保留原路径映射并在隔离区写入本次 manifest；不可简单粗暴地递归删除未知目录。`
   return `你正在执行 DSH PC Manager 的“二次研判与清理”。用户已经明确勾选下列项目并确认开始。当前会话是全新的清理会话，工作目录为 ${options.rootPath}。
 
 授权边界（最高优先级）：
 1. 只允许处理下方 JSON 中列出的 target，以及完成该目标不可分割且有直接证据关联的进程/持久化项。新发现但未授权的对象只写入 followup，不得修改。
-2. 动手前逐项重新读取当前状态，确认路径、进程、签名/哈希或配置仍与扫描证据一致。目标变化、证据不足、系统关键对象、范围含糊或风险大于收益时必须跳过。
-3. 默认可逆。普通文件优先移动到隔离区 ${options.quarantinePath}，保留原路径映射并在隔离区写入本次 manifest；不可简单粗暴地递归删除未知目录。
-4. 对缓存/临时文件可在确认来源与边界后清除；对正在使用或可能损坏应用的数据，跳过或采用应用/系统官方清理方式。
+${targetRule}
+${reversibilityRule}
+4. 对缓存/临时文件可在确认来源与边界后清除；对正在使用或可能损坏应用的数据，普通方案跳过或采用应用/系统官方清理方式。safe-clean 项目优先采用应用/系统官方清理方式；也可清除已核实为缓存、临时文件或其他无关键用途且位于精确授权范围内的内容，不得触碰用户数据或扩大目标。
 5. 病毒类项目按“遏制进程 → 禁用明确关联的持久化 → 隔离载荷 → 清理已授权配置 → 复查”的顺序处理。不要关闭系统防火墙、Defender、UAC，不要删除系统关键服务/驱动，不要通过网络下载工具。
 6. PowerShell 命令必须使用 LiteralPath 或等价精确参数，禁止由未转义字符串拼接破坏性命令，禁止通配符扩大范围。每一步核验退出状态与结果。
 7. 不得为了完成任务而取得未知目录所有权、批量改 ACL、清空整盘回收站或重置整套防火墙策略。
 8. ${options.presetPrompt}
-9. 独立只读审核 Agent 已先行审查。必须遵守其逐项 constraints；审核报告不能扩大用户授权，若现场情况与审核依据不一致则跳过。
-10. 用户处理方案是明确意图：recommended 表示可采用扫描建议；quarantine 表示只能采用可恢复的隔离，不得永久删除；manual 表示只可执行 instruction 中明确描述且审核放行的动作。无法安全满足时必须跳过。
+${auditRule}
+${actionRule}
 
 来源扫描：${options.sourceScanKind === 'disk' ? '硬盘清理' : '病毒扫描'}
 用户授权项目：
@@ -211,16 +231,20 @@ export interface AuditPromptOptions {
 }
 
 export function cleanupAuditPrompt(options: AuditPromptOptions): string {
+  const safeCleanupIds = options.instructions.filter(instruction => instruction.mode === 'safe-clean').map(instruction => instruction.riskId)
+  const safeCleanupRule = safeCleanupIds.length === 0
+    ? ''
+    : `用户为以下项目选择了“安全清理”：${JSON.stringify(safeCleanupIds)}。对这些项目，你的职责是检查并写明可执行的安全范围，不是因保守偏好直接 veto。若存在任何边界明确且安全的清理方式，应给出 allow 和精确 constraints；只有确实没有任何安全可行的修改时才 deny，并说明具体阻断原因。deny/manual 项也会交给执行 Agent 按 reason 与 constraints 尝试边界内的最大安全清理，因此务必写明可操作的安全子范围及禁止触碰的内容。`
   return `你是 DSH PC Manager 的独立清理审核 Agent。你与后续执行 Agent 是彼此隔离的新会话，当前权限固定为 read-only。你的职责是阻止误伤，而不是尽量放行。
 
 逐项审核规则：
 1. 只观察用户授权 JSON 中的精确 target 及验证它所必需的只读系统状态；不得修改任何内容。
 2. 重新核对目标是否仍存在、身份是否变化、证据是否足够、是否为系统/应用关键对象、建议动作是否可逆，以及隔离区 ${options.quarantinePath} 是否适合承载恢复副本。
-3. allow 仅用于目标明确、风险收益合理且能通过 constraints 约束安全执行的项目；deny 用于误报、关键系统对象、范围含糊、目标已变化或明显高误伤风险；manual 用于必须由人类进一步判断用途的项目。
+3. 普通方案中，allow 仅用于目标明确、风险收益合理且能通过 constraints 约束安全执行的项目；deny 用于误报、关键系统对象、范围含糊、目标已变化或明显高误伤风险；manual 用于必须由人类进一步判断用途的项目。${safeCleanupRule}
 4. 审核不得新增清理目标。关联对象未被用户勾选时写入 globalWarnings，不得放进任何已有 id 的授权范围。
 5. 对病毒项，单一“未签名”“位于 AppData”“有外连”不足以放行清除；对磁盘项，单一“文件较旧/较大”不足以放行。
 6. 每个用户授权 id 必须恰好给出一次决定。${options.presetPrompt}
-7. 逐项核对用户处理方案：quarantine 只能放行可恢复的隔离；manual 必须判断用户 instruction 是否精确、安全且没有扩大对应 target。用户方案不安全时应 deny 或 manual，不得擅自改成破坏性更强的动作。
+7. 逐项核对用户处理方案：quarantine 只能放行可恢复的隔离；manual 必须判断用户 instruction 是否精确、安全且没有扩大对应 target。用户方案不安全时应 deny 或 manual，不得擅自改成破坏性更强的动作。安全清理项目应尽量给出精确、可执行的安全边界；不要仅因动作不可逆或审核不确定就否决，需明确哪些清理范围仍然安全。
 
 工作目录：${options.rootPath}
 来源扫描：${options.sourceScanKind === 'disk' ? '硬盘清理' : '病毒扫描'}
@@ -248,14 +272,17 @@ ${JSON.stringify(options.instructions, null, 2)}
 不得声称进行过未实际完成的核验。`
 }
 
-export function chatPrompt(message: string, risks: RiskItem[], presetPrompt: string, referencedPaths: PathReference[] = []): string {
+export function chatPrompt(message: string, risks: RiskItem[], presetPrompt: string, referencedPaths: PathReference[] = [], operationMode = false): string {
   const context = risks.length === 0
     ? '当前没有附带风险项。'
     : `当前界面附带的风险项如下（仅供解释，不构成清理授权）：\n${JSON.stringify(risks, null, 2)}`
   const references = referencedPaths.length === 0
     ? '用户没有通过 @ 引用文件或目录。'
-    : `用户通过 @ 明确引用了下列本机路径。可按需只读查看，但不得修改，也不得把引用视为清理授权：\n${JSON.stringify(referencedPaths, null, 2)}`
-  return `你是 DSH PC Manager 的只读电脑管理顾问。回答用户问题，可用只读工具核实系统状态，但绝不修改文件、进程、注册表、服务、任务、防火墙或其他配置。若用户要求执行清理，说明应先在界面勾选风险项并点击“一键清理”。
+    : `用户通过 @ 明确引用了下列本机路径。路径引用用于标明上下文；只有用户消息明确要求修改该路径时才构成操作授权：\n${JSON.stringify(referencedPaths, null, 2)}`
+  const operatingInstructions = operationMode
+    ? '当前为可操作模式，DSH 拥有完整文件与系统写入权限。回答问题时仍保持只读；只有用户消息明确要求操作时才执行。按消息中具体指定的路径、对象和动作逐项执行；不得将模糊指令解释为批量删除或扩大范围。操作前核对目标，操作后核实结果并如实报告。'
+    : '当前为只读咨询模式。可用只读工具核实系统状态，但绝不修改文件、进程、注册表、服务、任务、防火墙或其他配置。若用户要求执行清理，说明可切换到可操作模式，或在界面勾选风险项后点击“一键清理”。'
+  return `你是 DSH PC Manager 的电脑管理顾问。${operatingInstructions}
 
 Agent 预设：${presetPrompt}
 ${context}

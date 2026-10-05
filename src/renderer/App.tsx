@@ -107,7 +107,7 @@ interface ToastState {
   message: string
 }
 
-type RiskResolutionMode = 'recommended' | 'ignore' | 'quarantine' | 'manual'
+type RiskResolutionMode = 'recommended' | 'ignore' | 'quarantine' | 'manual' | 'safe-clean'
 
 interface RiskResolution {
   mode: RiskResolutionMode
@@ -126,6 +126,7 @@ const RESOLUTION_LABELS: Record<RiskResolutionMode, string> = {
   ignore: '忽略',
   quarantine: '隔离',
   manual: '手动方案',
+  'safe-clean': '安全清理',
 }
 
 type SettingsTab = 'general' | 'model' | 'agent' | 'security' | 'about'
@@ -228,6 +229,7 @@ function settingsInput(settings: AppSettings, overrides: Partial<SaveSettingsInp
     scanDepth: settings.scanDepth,
     includeNetworkDrives: settings.includeNetworkDrives,
     quarantineRetentionDays: settings.quarantineRetentionDays,
+    relaxedPermissions: settings.relaxedPermissions,
     telemetryEnabled: settings.telemetryEnabled,
     ...overrides,
   }
@@ -445,10 +447,10 @@ function RiskRow(props: {
                 <b>处理方案</b>
                 <div>
                   <div className="resolution-options" role="group" aria-label={`${props.risk.name} 的处理方案`}>
-                    {(['recommended', 'ignore', 'quarantine', 'manual'] as const).map(mode => <button key={mode} type="button" disabled={props.disabled} className={props.resolution.mode === mode ? 'active' : ''} onClick={() => { props.onResolution({ mode, instruction: mode === 'manual' ? props.resolution.instruction : '' }) }}>{RESOLUTION_LABELS[mode]}</button>)}
+                    {(['recommended', 'ignore', 'quarantine', 'manual', 'safe-clean'] as const).map(mode => <button key={mode} type="button" disabled={props.disabled} className={props.resolution.mode === mode ? 'active' : ''} onClick={() => { props.onResolution({ mode, instruction: mode === 'manual' ? props.resolution.instruction : '' }) }}>{RESOLUTION_LABELS[mode]}</button>)}
                   </div>
                   {props.resolution.mode === 'manual' && <textarea rows={3} disabled={props.disabled} value={props.resolution.instruction} maxLength={2000} placeholder="请输入希望 Agent 执行的具体方案；审核 Agent 会先检查安全性和授权边界。" onChange={event => { props.onResolution({ mode: 'manual', instruction: event.target.value }) }} />}
-                  <small>{props.resolution.mode === 'ignore' ? '此项不会进入清理会话。' : props.resolution.mode === 'quarantine' ? '只允许移动到可恢复隔离区，不允许永久删除。' : props.resolution.mode === 'manual' ? '方案会先交给独立审核 Agent，审核拒绝时不会执行。' : '清理 Agent 将基于扫描建议再次核验后决定动作。'}</small>
+                  <small>{props.resolution.mode === 'ignore' ? '此项不会进入清理会话。' : props.resolution.mode === 'quarantine' ? '只允许移动到可恢复隔离区，不允许永久删除。' : props.resolution.mode === 'manual' ? '方案会先交给独立审核 Agent，审核拒绝时不会执行。' : props.resolution.mode === 'safe-clean' ? '审核 Agent 仍检查安全范围；清理 Agent 会在边界内尽力清理所选目标，不会因审核拒绝直接跳过。' : '清理 Agent 将基于扫描建议再次核验后决定动作。'}</small>
                 </div>
               </div>
             )}
@@ -471,6 +473,8 @@ function RiskSection(props: {
   selectedIds: Set<string>
   busy: boolean
   cleanupReport?: CleanupReport
+  relaxedPermissions: boolean
+  quarantineAvailable: boolean
   resolutions: Record<string, RiskResolution>
   onToggle(id: string): void
   onSelectAll(ids: string[], selected: boolean): void
@@ -488,6 +492,7 @@ function RiskSection(props: {
     || (right.sizeBytes ?? -1) - (left.sizeBytes ?? -1)
     || left.name.localeCompare(right.name, 'zh-CN', { numeric: true })), [props.risks, query, severity])
   const selectedRisks = props.risks.filter(risk => props.selectedIds.has(risk.id))
+  const safeCleanupCount = selectedRisks.filter(risk => props.resolutions[risk.id]?.mode === 'safe-clean').length
   const selectedBytes = selectedRisks.reduce((total, risk) => total + (risk.sizeBytes ?? 0), 0)
   const allFilteredSelected = filtered.length > 0 && filtered.every(risk => props.selectedIds.has(risk.id))
   const cleanupById = new Map(props.cleanupReport?.results.map(result => [result.id, result]))
@@ -549,8 +554,11 @@ function RiskSection(props: {
           <span className="selection-count">{selectedRisks.length}</span>
           <div><b>已选择项目</b><span>{selectedBytes > 0 ? `预计涉及 ${formatBytes(selectedBytes)}` : '最终动作由 Agent 二次判断'}</span></div>
         </div>
-        <div className={`cleanup-note ${incompleteManualCount > 0 ? 'warning' : ''}`}><LockKeyhole size={14} />{incompleteManualCount > 0 ? `还有 ${incompleteManualCount} 项未填写手动方案` : '清理前会启动新会话重新核验，不会按清单盲删'}</div>
-        <button type="button" className="primary-button cleanup-button" disabled={props.busy || selectedRisks.length === 0 || incompleteManualCount > 0} onClick={props.onCleanup}>
+        <div className={`cleanup-note ${!props.quarantineAvailable || incompleteManualCount > 0 || props.relaxedPermissions ? 'warning' : ''}`}>
+          {!props.quarantineAvailable ? <AlertTriangle size={14} /> : props.relaxedPermissions ? <AlertTriangle size={14} /> : <LockKeyhole size={14} />}
+          {!props.quarantineAvailable ? '需要可用的非 C 盘才能启用隔离与清理' : incompleteManualCount > 0 ? `还有 ${incompleteManualCount} 项未填写手动方案` : safeCleanupCount > 0 ? `${safeCleanupCount} 项安全清理仍会经过审核，并按安全边界尽力执行` : props.relaxedPermissions ? '放宽权限已启用：清理将跳过独立审核' : '清理前会启动新会话重新核验，不会按清单盲删'}
+        </div>
+        <button type="button" className="primary-button cleanup-button" disabled={props.busy || !props.quarantineAvailable || selectedRisks.length === 0 || incompleteManualCount > 0} onClick={props.onCleanup}>
           <Sparkles size={16} />交给 Agent 一键清理
         </button>
       </div>
@@ -564,17 +572,21 @@ function ChatSection(props: {
   presets: AgentPreset[]
   risks: RiskItem[]
   busy: boolean
-  onSend(message: string, referencedPaths: PathReference[]): Promise<void>
+  onSend(message: string, referencedPaths: PathReference[], operationMode: boolean): Promise<void>
   onQuickSetting(settings: SaveSettingsInput): Promise<void>
 }): ReactNode {
   const [draft, setDraft] = useState('')
   const [expanded, setExpanded] = useState(false)
+  const [operationMode, setOperationMode] = useState(false)
   const [mention, setMention] = useState<MentionContext | undefined>()
   const [suggestions, setSuggestions] = useState<PathSuggestion[]>([])
   const [suggestionIndex, setSuggestionIndex] = useState(0)
   const [references, setReferences] = useState<PathReference[]>([])
   const listRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  useEffect(() => {
+    if (!props.settings.relaxedPermissions) setOperationMode(false)
+  }, [props.settings.relaxedPermissions])
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: 'smooth' })
   }, [props.messages])
@@ -637,7 +649,7 @@ function ChatSection(props: {
     setSuggestions([])
     const submittedReferences = references
     setReferences([])
-    await props.onSend(message, submittedReferences)
+    await props.onSend(message, submittedReferences, operationMode)
   }
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
     if (suggestions.length > 0 && mention !== undefined) {
@@ -670,10 +682,16 @@ function ChatSection(props: {
   return (
     <section className={`chat-section ${expanded ? 'expanded' : ''}`}>
       <div className="chat-header">
-        <div><span className="bot-avatar"><Bot size={17} /></span><h3>电脑管家对话</h3><span className="read-only-tag"><LockKeyhole size={12} />只读咨询</span></div>
+        <div className="chat-header-main"><span className="bot-avatar"><Bot size={17} /></span><h3>电脑管家对话</h3>
+          <div className="chat-mode-switch" role="group" aria-label="对话权限模式">
+            <button type="button" className={!operationMode ? 'active' : ''} aria-pressed={!operationMode} disabled={props.busy} onClick={() => { setOperationMode(false) }}><LockKeyhole size={11} />只读咨询</button>
+            <button type="button" className={operationMode ? 'active operate' : ''} aria-pressed={operationMode} disabled={props.busy || !props.settings.relaxedPermissions} title={props.settings.relaxedPermissions ? '允许按明确指令执行文件和系统操作' : '请先在设置的“隔离与隐私”中开启放宽操作权限'} onClick={() => { setOperationMode(true) }}><Wrench size={11} />可操作模式</button>
+          </div>
+        </div>
         <div className="chat-header-actions"><span>可结合当前 {props.risks.length} 个风险项继续询问</span><button type="button" title={expanded ? '退出全屏对话' : '放大对话'} aria-label={expanded ? '退出全屏对话' : '放大对话'} onClick={() => { setExpanded(value => !value) }}>{expanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</button></div>
       </div>
       <div className="chat-messages" ref={listRef}>
+        {operationMode && <div className="chat-operation-warning"><AlertTriangle size={14} /><span><b>可操作模式已开启。</b> Agent 拥有完整系统读写权限，只会按你明确指定的对象和动作执行。</span></div>}
         {props.messages.length === 0 ? (
           <div className="chat-welcome">
             <Sparkles size={18} />
@@ -713,7 +731,7 @@ function ChatSection(props: {
           value={draft}
           rows={2}
           disabled={props.busy}
-          placeholder={props.busy ? 'Agent 正在执行任务…' : '询问扫描结果，或输入电脑管理问题…'}
+          placeholder={props.busy ? 'Agent 正在执行任务…' : operationMode ? '描述要执行的操作和确切目标…' : '询问扫描结果，或输入电脑管理问题…'}
           onChange={event => { updateDraft(event.target.value, event.target.selectionStart) }}
           onClick={event => { setMention(mentionContextAt(draft, event.currentTarget.selectionStart)) }}
           onKeyUp={event => { if (!['ArrowDown', 'ArrowUp', 'Enter', 'Escape'].includes(event.key)) setMention(mentionContextAt(draft, event.currentTarget.selectionStart)) }}
@@ -733,25 +751,30 @@ function ChatSection(props: {
   )
 }
 
-function CleanupConfirmation(props: { risks: RiskItem[]; onCancel(): void; onConfirm(): void }): ReactNode {
+function CleanupConfirmation(props: { risks: RiskItem[]; relaxedPermissions: boolean; hasSafeCleanup: boolean; onCancel(): void; onConfirm(): void }): ReactNode {
   const [confirmed, setConfirmed] = useState(false)
   const critical = props.risks.filter(risk => risk.severity === 'critical' || risk.severity === 'high').length
   const totalBytes = props.risks.reduce((total, risk) => total + (risk.sizeBytes ?? 0), 0)
+  const description = props.hasSafeCleanup
+    ? '安全清理项目仍会经过独立只读审核。审核 Agent 负责划定安全范围；即使审核保守拒绝，执行 Agent 也会在这些边界内尽力清理所选目标。确实没有安全可行的动作时会明确报告失败。'
+    : props.relaxedPermissions
+      ? '放宽权限已启用，本次会跳过独立审核。Agent 将按你逐项选择的目标和处理方案执行，手动方案可明确要求删除指定目标。'
+      : '系统会先启动独立的只读审核 Agent。只有审核放行的项目，才会进入拥有写入能力的清理 Agent 会话，并优先隔离而非直接删除。'
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={event => { if (event.currentTarget === event.target) props.onCancel() }}>
       <div className="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="cleanup-confirm-title">
         <button type="button" className="modal-close" onClick={props.onCancel}><X size={18} /></button>
         <span className="confirm-icon"><Sparkles size={24} /></span>
         <h2 id="cleanup-confirm-title">交给 Agent 二次研判并清理？</h2>
-        <p>系统会先启动独立的只读审核 Agent。只有审核放行的项目，才会进入拥有写入能力的清理 Agent 会话，并优先隔离而非直接删除。</p>
+        <p>{description}</p>
         <div className="confirm-stats">
           <div><strong>{props.risks.length}</strong><span>授权项目</span></div>
           <div><strong>{critical}</strong><span>高风险项目</span></div>
           <div><strong>{totalBytes > 0 ? formatBytes(totalBytes) : '—'}</strong><span>涉及空间</span></div>
         </div>
-        <div className="authorization-scope">
-          <LockKeyhole size={17} />
-          <div><b>双 Agent 审核门已启用</b><span>审核 Agent 可拒绝或转人工；执行 Agent 只能处理审核放行且由你勾选的目标。</span></div>
+        <div className={`authorization-scope ${props.relaxedPermissions ? 'relaxed' : ''}`}>
+          {props.relaxedPermissions ? <AlertTriangle size={17} /> : <LockKeyhole size={17} />}
+          <div><b>{props.hasSafeCleanup ? '安全清理边界审核已启用' : props.relaxedPermissions ? '放宽权限模式已启用' : '双 Agent 审核门已启用'}</b><span>{props.hasSafeCleanup ? '执行 Agent 必须只处理你选中的目标，并按审核给出的安全范围尽力完成清理。' : props.relaxedPermissions ? '执行 Agent 可修改或删除你勾选并指定的目标；请确认目标和手动方案准确。' : '审核 Agent 可拒绝或转人工；执行 Agent 只能处理审核放行且由你勾选的目标。'}</span></div>
         </div>
         <label className="confirm-check">
           <input type="checkbox" checked={confirmed} onChange={event => { setConfirmed(event.target.checked) }} />
@@ -852,8 +875,18 @@ function ScanScopeDialog(props: {
   )
 }
 
-function CleanupReportDialog(props: { report: CleanupReport; risks: RiskItem[]; quarantinePath: string; onClose(): void }): ReactNode {
+function CleanupReportDialog(props: { report: CleanupReport; risks: RiskItem[]; auditReport?: CleanupAuditReport; quarantinePath: string; onClose(): void; onContinueSkipped(risks: RiskItem[]): void }): ReactNode {
   const riskMap = new Map(props.risks.map(risk => [risk.id, risk]))
+  const auditMap = new Map(props.auditReport?.decisions.map(decision => [decision.id, decision]) ?? [])
+  const blockedRisks = props.report.results
+    .filter(result => {
+      const decision = auditMap.get(result.id)
+      return result.status === 'skipped' && decision !== undefined && decision.verdict !== 'allow'
+    })
+    .flatMap(result => {
+      const risk = riskMap.get(result.id)
+      return risk === undefined ? [] : [risk]
+    })
   const success = props.report.results.filter(result => result.status === 'cleaned' || result.status === 'quarantined').length
   return (
     <div className="modal-backdrop">
@@ -874,6 +907,7 @@ function CleanupReportDialog(props: { report: CleanupReport; risks: RiskItem[]; 
         </div>
         {props.report.followup.length > 0 && <div className="followup-box"><b>后续建议</b>{props.report.followup.map((item, index) => <p key={index}>• {item}</p>)}</div>}
         <div className="modal-actions">
+          {blockedRisks.length > 0 && <button type="button" className="secondary-button" onClick={() => { props.onContinueSkipped(blockedRisks) }}><RotateCcw size={15} />继续安全清理 {blockedRisks.length} 项</button>}
           <button type="button" className="secondary-button" onClick={() => { void window.pcManager.openPath(props.quarantinePath) }}><FolderOpen size={15} />打开隔离区</button>
           <button type="button" className="primary-button" onClick={props.onClose}>完成</button>
         </div>
@@ -882,7 +916,7 @@ function CleanupReportDialog(props: { report: CleanupReport; risks: RiskItem[]; 
   )
 }
 
-function HistoryPanel(props: { open: boolean; entries: OperationHistoryEntry[]; loading: boolean; onClose(): void; onRefresh(): void }): ReactNode {
+function HistoryPanel(props: { open: boolean; entries: OperationHistoryEntry[]; loading: boolean; onClose(): void; onRefresh(): void; onContinueSkipped(risks: RiskItem[]): void }): ReactNode {
   if (!props.open) return null
   const statusLabel: Record<OperationHistoryEntry['status'], string> = {
     running: '进行中',
@@ -908,6 +942,15 @@ function HistoryPanel(props: { open: boolean; entries: OperationHistoryEntry[]; 
             const auditById = new Map(entry.auditReport?.decisions.map(decision => [decision.id, decision]) ?? [])
             const resultById = new Map(entry.cleanupReport?.results.map(result => [result.id, result]) ?? [])
             const handled = entry.cleanupReport?.results.filter(result => result.status === 'cleaned' || result.status === 'quarantined') ?? []
+            const blockedRisks = entry.cleanupReport?.results
+              .filter(result => {
+                const decision = auditById.get(result.id)
+                return result.status === 'skipped' && decision !== undefined && decision.verdict !== 'allow'
+              })
+              .flatMap(result => {
+                const risk = riskById.get(result.id)
+                return risk === undefined ? [] : [risk]
+              }) ?? []
             return (
               <details key={entry.id} className={`history-entry ${entry.status}`}>
                 <summary>
@@ -931,7 +974,7 @@ function HistoryPanel(props: { open: boolean; entries: OperationHistoryEntry[]; 
                         const instruction = instructionById.get(risk.id)
                         const audit = auditById.get(risk.id)
                         const result = resultById.get(risk.id)
-                        return <details key={risk.id} className={`history-risk severity-${risk.severity}`}><summary><span className={`severity-badge ${risk.severity}`}>{SEVERITY_LABELS[risk.severity]}</span><strong>{risk.name}</strong><em>{instruction === undefined ? risk.recommendedAction : instruction.mode === 'ignore' ? '用户选择：忽略' : instruction.mode === 'quarantine' ? '用户选择：隔离' : instruction.mode === 'manual' ? '用户选择：手动方案' : '用户选择：AI 建议'}</em><ChevronDown size={13} /></summary><div><p><b>目标</b><code>{risk.target}</code></p><p><b>判断理由</b><span>{risk.reason}</span></p><p><b>AI 建议</b><span>{risk.recommendedAction}</span></p>{risk.evidence.length > 0 && <p><b>证据</b><span>{risk.evidence.join('；')}</span></p>}{instruction?.mode === 'manual' && <p><b>手动方案</b><span>{instruction.instruction}</span></p>}{audit !== undefined && <p><b>审核结果</b><span>{audit.verdict === 'allow' ? '放行' : audit.verdict === 'deny' ? '拒绝' : '需人工确认'} · {audit.reason}</span></p>}{result !== undefined && <p><b>实际处理</b><span>{result.action} · {result.detail}</span></p>}</div></details>
+                        return <details key={risk.id} className={`history-risk severity-${risk.severity}`}><summary><span className={`severity-badge ${risk.severity}`}>{SEVERITY_LABELS[risk.severity]}</span><strong>{risk.name}</strong><em>{instruction === undefined ? risk.recommendedAction : instruction.mode === 'ignore' ? '用户选择：忽略' : instruction.mode === 'quarantine' ? '用户选择：隔离' : instruction.mode === 'manual' ? '用户选择：手动方案' : instruction.mode === 'safe-clean' ? '用户选择：安全清理' : '用户选择：AI 建议'}</em><ChevronDown size={13} /></summary><div><p><b>目标</b><code>{risk.target}</code></p><p><b>判断理由</b><span>{risk.reason}</span></p><p><b>AI 建议</b><span>{risk.recommendedAction}</span></p>{risk.evidence.length > 0 && <p><b>证据</b><span>{risk.evidence.join('；')}</span></p>}{instruction?.mode === 'manual' && <p><b>手动方案</b><span>{instruction.instruction}</span></p>}{audit !== undefined && <p><b>审核结果</b><span>{audit.verdict === 'allow' ? '放行' : audit.verdict === 'deny' ? '拒绝' : '需人工确认'} · {audit.reason}</span></p>}{result !== undefined && <p><b>实际处理</b><span>{result.action} · {result.detail}</span></p>}</div></details>
                       })}
                     </div>
                   )}
@@ -939,6 +982,7 @@ function HistoryPanel(props: { open: boolean; entries: OperationHistoryEntry[]; 
                     <div className="history-cleanup-results">
                       <b>清理明细 · 成功处理 {handled.length} 项</b>
                       {entry.cleanupReport.results.map(result => <div key={result.id} className={result.status}><span>{result.status === 'cleaned' ? '已清理' : result.status === 'quarantined' ? '已隔离' : result.status === 'skipped' ? '已跳过' : '失败'}</span><div><strong>{riskById.get(result.id)?.name ?? result.id}</strong><small>{result.action} · {result.detail}</small></div></div>)}
+                      {blockedRisks.length > 0 && <button type="button" className="secondary-button" onClick={() => { props.onContinueSkipped(blockedRisks) }}><RotateCcw size={14} />继续安全清理审核跳过的 {blockedRisks.length} 项</button>}
                     </div>
                   )}
                 </div>
@@ -957,6 +1001,7 @@ interface SettingsPanelProps {
   settings: AppSettings
   presets: AgentPreset[]
   quarantinePath: string
+  quarantineMessage: string | undefined
   version: string
   onClose(): void
   onSaved(settings: AppSettings): void
@@ -1146,9 +1191,13 @@ function SettingsPanel(props: SettingsPanelProps): ReactNode {
             )}
             {tab === 'security' && (
               <SettingsPage title="隔离与隐私" description="扫描内容只在本机 DSH 会话中处理。">
-                <SettingRow title="隔离区" description={props.quarantinePath}><button type="button" className="secondary-button" onClick={() => { void window.pcManager.openPath(props.quarantinePath) }}><FolderOpen size={15} />打开</button></SettingRow>
+                <SettingRow title="隔离区" description={props.quarantinePath || props.quarantineMessage || '未检测到可用的非 C 盘，隔离与清理功能已禁用。'}><button type="button" className="secondary-button" disabled={props.quarantinePath.length === 0} onClick={() => { void window.pcManager.openPath(props.quarantinePath) }}><FolderOpen size={15} />打开</button></SettingRow>
                 <SettingRow title="隔离保留期" description="到期项目不会自动清空；保留期用于提醒你复核。"><label className="number-field"><input type="number" min={1} max={365} value={draft.quarantineRetentionDays} onChange={event => { setDraft(current => ({ ...current, quarantineRetentionDays: Math.max(1, Math.min(365, Number(event.target.value) || 1)) })) }} />天</label></SettingRow>
-                <div className="privacy-note"><LockKeyhole size={18} /><div><b>双层安全边界</b><p>扫描会话由 DSH read-only 沙箱硬性禁止写入；只有你勾选项目并确认后，才会为一次独立清理会话开放写权限。</p></div></div>
+                <SettingRow title="放宽操作权限" description="允许清理跳过独立审核，并启用对话中的可操作模式。默认关闭；只在目标和动作明确时开启。"><Switch checked={draft.relaxedPermissions} onChange={checked => { setDraft(current => ({ ...current, relaxedPermissions: checked })) }} /></SettingRow>
+                <div className={`privacy-note ${draft.relaxedPermissions ? 'relaxed' : ''}`}>
+                  {draft.relaxedPermissions ? <AlertTriangle size={18} /> : <LockKeyhole size={18} />}
+                  <div><b>{draft.relaxedPermissions ? '放宽权限已开启' : '双层安全边界'}</b><p>{draft.relaxedPermissions ? '扫描仍为只读。清理会跳过独立审核；对话只有切换到“可操作模式”才获得 DSH 完整读写权限，操作范围仍应由你明确指定。' : '扫描会话由 DSH read-only 沙箱硬性禁止写入；清理会先经过独立审核，只有你勾选并确认后才开放写权限。'}</p></div>
+                </div>
               </SettingsPage>
             )}
             {tab === 'about' && (
@@ -1348,7 +1397,7 @@ export function App(): ReactNode {
     const resolution = riskResolutions[risk.id] ?? { mode: 'recommended', instruction: '' }
     return {
       riskId: risk.id,
-      mode: resolution.mode === 'quarantine' || resolution.mode === 'manual' ? resolution.mode : 'recommended',
+      mode: resolution.mode === 'quarantine' || resolution.mode === 'manual' || resolution.mode === 'safe-clean' ? resolution.mode : 'recommended',
       ...(resolution.mode === 'manual' ? { instruction: resolution.instruction.trim() } : {}),
     }
   }), ...ignoredRisks.map(risk => ({ riskId: risk.id, mode: 'ignore' as const }))]
@@ -1394,18 +1443,41 @@ export function App(): ReactNode {
   const startCleanup = async (): Promise<void> => {
     setConfirmCleanup(false)
     cleanupInputRisksRef.current = structuredClone(selectedRisks)
+    setCleanupReport(undefined)
+    setCleanupReportRisks([])
+    setAuditReport(undefined)
     try {
       await window.pcManager.startCleanup({ sourceScanKind: riskScanKind, risks: selectedRisks, ignoredRisks, instructions: cleanupInstructions })
     } catch (error) {
       notify('error', error instanceof Error ? error.message : String(error))
     }
   }
-  const sendChat = async (message: string, referencedPaths: PathReference[]): Promise<void> => {
+  const continueSkippedCleanup = (items: RiskItem[]): void => {
+    const byId = new Map(items.map(risk => [risk.id, risk]))
+    const retryRisks = [...byId.values()].slice(0, 200)
+    if (retryRisks.length === 0) return
+    const retryIds = new Set(retryRisks.map(risk => risk.id))
+    setRisks(current => [...current.filter(risk => !retryIds.has(risk.id)), ...retryRisks])
+    setRiskScanKind(retryRisks[0]?.scanKind ?? 'disk')
+    setSelectedIds(retryIds)
+    setRiskResolutions(current => ({
+      ...current,
+      ...Object.fromEntries(retryRisks.map(risk => [risk.id, { mode: 'safe-clean', instruction: '' } satisfies RiskResolution])),
+    }))
+    setCleanupReport(undefined)
+    setCleanupReportRisks([])
+    setAuditReport(undefined)
+    setReportOpen(false)
+    setHistoryOpen(false)
+    setConfirmCleanup(true)
+    notify('info', `已选中 ${retryRisks.length} 项；确认后会重新审核安全范围并继续清理。`)
+  }
+  const sendChat = async (message: string, referencedPaths: PathReference[], operationMode: boolean): Promise<void> => {
     if (!ensureConfigured()) return
-    const userMessage: ChatMessage = { id: `user-${Date.now()}`, role: 'user', content: message, time: Date.now() }
+    const userMessage: ChatMessage = { id: `user-${Date.now()}`, role: 'user', content: operationMode ? `【可操作模式】${message}` : message, time: Date.now() }
     setMessages(current => [...current, userMessage])
     try {
-      await window.pcManager.sendChat({ message, relatedRisks: risks.filter(risk => selectedIds.has(risk.id)), referencedPaths })
+      await window.pcManager.sendChat({ message, relatedRisks: risks.filter(risk => selectedIds.has(risk.id)), referencedPaths, operationMode })
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error)
       setMessages(current => [...current, { id: `error-${Date.now()}`, role: 'system', content: detail, time: Date.now() }])
@@ -1478,6 +1550,8 @@ export function App(): ReactNode {
           risks={risks}
           selectedIds={selectedIds}
           resolutions={riskResolutions}
+          relaxedPermissions={settings.relaxedPermissions}
+          quarantineAvailable={bootstrap.system.quarantinePath.length > 0}
           busy={busy}
           {...cleanupReport === undefined ? {} : { cleanupReport }}
           onToggle={id => { setSelectedIds(current => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next }); setRiskResolutions(current => current[id]?.mode === 'ignore' ? { ...current, [id]: { mode: 'recommended', instruction: '' } } : current) }}
@@ -1498,17 +1572,18 @@ export function App(): ReactNode {
         <footer className="app-footer"><span><LockKeyhole size={12} />扫描只读 · 清理需确认 · API Key 使用系统加密存储</span><span>DSH PC Manager {bootstrap.appVersion}</span></footer>
       </main>
 
-      {confirmCleanup && <CleanupConfirmation risks={selectedRisks} onCancel={() => { setConfirmCleanup(false) }} onConfirm={() => { void startCleanup() }} />}
+      {confirmCleanup && <CleanupConfirmation risks={selectedRisks} relaxedPermissions={settings.relaxedPermissions} hasSafeCleanup={selectedRisks.some(risk => riskResolutions[risk.id]?.mode === 'safe-clean')} onCancel={() => { setConfirmCleanup(false) }} onConfirm={() => { void startCleanup() }} />}
       {pendingElevatedScan !== undefined && <ElevationDialog kind={pendingElevatedScan} onCancel={() => { setPendingElevatedScan(undefined) }} onLimited={() => { const kind = pendingElevatedScan; setPendingElevatedScan(undefined); void runScan(kind) }} onElevate={async () => { const restarted = await window.pcManager.requestElevation(); if (!restarted) notify('info', '未获得管理员权限，应用保持当前状态。') }} />}
       {scopeOpen && <ScanScopeDialog volumes={bootstrap.system.volumes} selected={scanTargets} onCancel={() => { setScopeOpen(false) }} onSave={targets => { setScanTargets(targets); setScopeOpen(false); notify('success', `已选择 ${targets.length} 个扫描范围`) }} onToast={notify} />}
-      {reportOpen && cleanupReport !== undefined && <CleanupReportDialog report={cleanupReport} risks={cleanupReportRisks} quarantinePath={bootstrap.system.quarantinePath} onClose={() => { setReportOpen(false) }} />}
-      <HistoryPanel open={historyOpen} entries={historyEntries} loading={historyLoading} onClose={() => { setHistoryOpen(false) }} onRefresh={refreshHistory} />
+      {reportOpen && cleanupReport !== undefined && <CleanupReportDialog report={cleanupReport} risks={cleanupReportRisks} {...auditReport === undefined ? {} : { auditReport }} quarantinePath={bootstrap.system.quarantinePath} onClose={() => { setReportOpen(false) }} onContinueSkipped={continueSkippedCleanup} />}
+      <HistoryPanel open={historyOpen} entries={historyEntries} loading={historyLoading} onClose={() => { setHistoryOpen(false) }} onRefresh={refreshHistory} onContinueSkipped={continueSkippedCleanup} />
       <SettingsPanel
         open={settingsOpen}
         initialTab={settingsTab}
         settings={settings}
         presets={presets}
         quarantinePath={bootstrap.system.quarantinePath}
+        quarantineMessage={bootstrap.system.quarantineMessage}
         version={bootstrap.appVersion}
         onClose={() => { setSettingsOpen(false) }}
         onSaved={saved => { setSettings(saved); applyTheme(saved.theme) }}

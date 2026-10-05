@@ -3,7 +3,7 @@ export type OperationKind = ScanKind | 'cleanup' | 'chat' | 'connection-test'
 export type OperationState = 'idle' | 'starting' | 'running' | 'cancelling' | 'completed' | 'failed' | 'cancelled'
 export type Severity = 'low' | 'medium' | 'high' | 'critical'
 export type ReasoningEffort = 'off' | 'low' | 'high' | 'max'
-export type CleanupActionMode = 'recommended' | 'ignore' | 'quarantine' | 'manual'
+export type CleanupActionMode = 'recommended' | 'ignore' | 'quarantine' | 'manual' | 'safe-clean'
 
 export interface ScanTarget {
   type: 'drive' | 'directory'
@@ -71,6 +71,7 @@ export interface AppSettings {
   scanDepth: 'standard' | 'deep'
   includeNetworkDrives: boolean
   quarantineRetentionDays: number
+  relaxedPermissions: boolean
   telemetryEnabled: boolean
 }
 
@@ -88,6 +89,7 @@ export interface SaveSettingsInput {
   scanDepth: AppSettings['scanDepth']
   includeNetworkDrives: boolean
   quarantineRetentionDays: number
+  relaxedPermissions: boolean
   telemetryEnabled: boolean
 }
 
@@ -104,6 +106,7 @@ export interface SystemOverview {
   platformLabel: string
   volumes: DiskVolume[]
   quarantinePath: string
+  quarantineMessage?: string
   isElevated: boolean
 }
 
@@ -292,6 +295,7 @@ export interface ChatInput {
   message: string
   relatedRisks: RiskItem[]
   referencedPaths: PathReference[]
+  operationMode?: boolean
 }
 
 export interface PcManagerApi {

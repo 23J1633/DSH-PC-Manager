@@ -18,6 +18,7 @@ interface SettingsDocument {
   scanDepth: AppSettings['scanDepth']
   includeNetworkDrives: boolean
   quarantineRetentionDays: number
+  relaxedPermissions: boolean
   telemetryEnabled: boolean
   lifetimeUsage: TokenUsage
 }
@@ -35,6 +36,7 @@ const DEFAULT_DOCUMENT: SettingsDocument = {
   scanDepth: 'standard',
   includeNetworkDrives: false,
   quarantineRetentionDays: 30,
+  relaxedPermissions: false,
   telemetryEnabled: false,
   lifetimeUsage: { ...EMPTY_TOKEN_USAGE },
 }
@@ -127,6 +129,7 @@ function normalizeDocument(value: unknown): SettingsDocument {
     quarantineRetentionDays: typeof input.quarantineRetentionDays === 'number'
       ? Math.min(365, Math.max(1, Math.round(input.quarantineRetentionDays)))
       : DEFAULT_DOCUMENT.quarantineRetentionDays,
+    relaxedPermissions: input.relaxedPermissions === true,
     telemetryEnabled: input.telemetryEnabled === true,
     lifetimeUsage: normalizedUsage(input.lifetimeUsage),
   }
@@ -168,6 +171,7 @@ export class SettingsStore {
       scanDepth: this.document.scanDepth,
       includeNetworkDrives: this.document.includeNetworkDrives,
       quarantineRetentionDays: this.document.quarantineRetentionDays,
+      relaxedPermissions: this.document.relaxedPermissions,
       telemetryEnabled: this.document.telemetryEnabled,
     }
   }

@@ -134,6 +134,7 @@ OperationController.validateScanTargets()
 | `src/main/result-parser.ts` | 提取标记 JSON、校验和归一化计划/风险/审核/清理结果 |
 | `src/main/settings-store.ts` | 设置加载、字段归一化、串行原子写入、safeStorage API Key 和 Token 累计 |
 | `src/main/history-store.ts` | 操作事件持久化、最多 80 条历史记录、清理报告和审核报告归档 |
+| `src/main/quarantine-path.ts` | 选择非 C 盘隔离位置、迁移旧隔离目录并更新历史恢复路径 |
 | `src/main/system-overview.ts` | Windows 磁盘容量、主机信息、系统根目录和管理员状态 |
 | `src/main/connection-test.ts` | 对兼容 Chat Completions 的模型服务执行一次最小连接请求 |
 | `src/main/path-suggestions.ts` | 为对话中的 `@` 引用提供本机路径补全 |
@@ -177,7 +178,7 @@ stdout 每行是一个 JSON-RPC frame。响应按 numeric request id 匹配；�
 | `saveSettings()` | `pc-manager:settings-save` | invoke | 归一化并保存设置 |
 | `startScan()` | `pc-manager:scan-start` | invoke | 启动硬盘或病毒扫描 |
 | `startCleanup()` | `pc-manager:cleanup-start` | invoke | 启动审核和清理链路 |
-| `sendChat()` | `pc-manager:chat-send` | invoke | 启动只读对话 |
+| `sendChat()` | `pc-manager:chat-send` | invoke | 启动只读咨询或用户启用的可操作对话 |
 | `cancelOperation()` | `pc-manager:operation-cancel` | invoke | 取消活动操作 |
 | `testConnection()` | `pc-manager:connection-test` | invoke | 发送最小模型连接请求 |
 | `chooseDirectory()` | `pc-manager:directory-choose` | invoke | 打开本机目录选择器 |
@@ -252,6 +253,7 @@ Parser 的关键行为：
 | Scan depth | `standard` | `standard` 或 `deep` |
 | Network drives | `false` | 默认拒绝 UNC 网络路径 |
 | Quarantine retention | 30 天 | 1–365 天 |
+| Relaxed permissions | `false` | 默认关闭；开启后跳过清理独立审核并解锁对话可操作模式 |
 | Telemetry | `false` | 默认关闭 |
 
 `SettingsStore` 使用临时文件加 `rename()` 原子写入，并通过队列串行化设置和 Token 累计写入。API Key 不通过 `publicSettings()` 返回；用户输入的 Key 使用 Electron `safeStorage` 加密后保存。没有本地加密值时，开发环境可使用 `DEEPSEEK_API_KEY` 作为后备。
@@ -262,10 +264,10 @@ Parser 的关键行为：
 settings.json                 设置和加密凭据
 operation-history.json        最多 80 条操作历史
 dsh-runtime/                  DSH 运行时数据
-quarantine/<operationId>/     清理操作的隔离区和 manifest
+非 C 盘/DSH PC Manager/quarantine/<用户标识>/  隔离文件和 manifest；旧 C 盘内容启动时迁移
 ~~~
 
-这些数据是用户本机状态，不应加入源码版本库、测试 fixture 或截图。
+设置、历史和 DSH 运行时数据仍位于 userData；Windows 隔离区固定放在可用的非 C 本地磁盘。迁移前会校验复制结果并更新历史恢复路径；没有可用空间时应用会停止清理，不会退回 C 盘。
 
 ### 11. 输入限制与边界
 
@@ -329,7 +331,7 @@ npm start
 | `npm run package:dir` | 生成 Windows 免安装目录 |
 | `npm run package` | 生成 NSIS x64 安装器 |
 
-`npm run package` 使用项目内 `.electron-builder-cache/`，应用目录输出到 `release/win-unpacked/`，NSIS 安装器文件名由 `package.json` 的 `artifactName` 定义。构建配置关闭了 asar，并将 `resources/dsh/pc-manager.patch.yml` 作为额外资源放入应用资源目录；如果改动 DSH patch 或打包文件选择，必须同时验证开发和打包两种路径。
+`npm run package` 使用项目内 `.electron-builder-cache/`，应用目录输出到 `release/win-unpacked/`，NSIS 安装器文件名由 `package.json` 的 `artifactName` 定义。构建配置关闭了 asar，并将 `resources/dsh/pc-manager.patch.yml` 作为额外资源放入应用资源目录。DSH peer 插件作为直接生产依赖打包，`afterPack` 会遍历产物的必需依赖并在缺包时终止构建。
 
 ### 14. 测试矩阵
 
@@ -379,7 +381,7 @@ $env:DSH_PC_MANAGER_SMOKE_ACTIONS = '[{"type":"click","selector":"button[aria-la
 
 ### 16. 安全开发约定
 
-- 扫描功能默认使用 `read-only`，只有清理执行阶段可以使用 `danger-full-access`。
+- 扫描始终使用 `read-only`；`danger-full-access` 只用于用户确认后的清理，或已开启放宽权限并切换到可操作模式的对话。
 - 所有破坏性动作必须绑定用户明确授权的精确风险 ID；禁止让 Agent 自己扩大范围。
 - PowerShell 文件操作使用 `-LiteralPath` 或等价精确参数；不要拼接未转义的 wildcard 命令。
 - 不通过删除系统目录解决空间问题；系统维护项优先给出官方维护命令或人工建议。
@@ -519,6 +521,7 @@ Only one operation may be active at a time. Scans, cleanup and chat create indep
 | `src/main/result-parser.ts` | Extracts marked JSON and normalizes plans, risks, review decisions and cleanup results |
 | `src/main/settings-store.ts` | Settings loading, normalization, serialized atomic writes, safeStorage credentials and lifetime tokens |
 | `src/main/history-store.ts` | Operation event persistence and up to 80 history entries |
+| `src/main/quarantine-path.ts` | Selects a non-C quarantine drive, migrates old quarantine data and updates history restore paths |
 | `src/main/system-overview.ts` | Windows volume capacity, host information, root path and elevation state |
 | `src/main/connection-test.ts` | One minimal request to a Chat Completions-compatible model endpoint |
 | `src/main/path-suggestions.ts` | Local path completion for `@` references |
@@ -562,7 +565,7 @@ The renderer calls only `window.pcManager`. The interface is defined in `src/sha
 | `saveSettings()` | `pc-manager:settings-save` | invoke | Normalize and persist settings |
 | `startScan()` | `pc-manager:scan-start` | invoke | Start disk or virus scan |
 | `startCleanup()` | `pc-manager:cleanup-start` | invoke | Start review and cleanup workflow |
-| `sendChat()` | `pc-manager:chat-send` | invoke | Start a read-only chat operation |
+| `sendChat()` | `pc-manager:chat-send` | invoke | Start a read-only consultation or user-enabled operation |
 | `cancelOperation()` | `pc-manager:operation-cancel` | invoke | Cancel the active operation |
 | `testConnection()` | `pc-manager:connection-test` | invoke | Send the minimal model request |
 | `chooseDirectory()` | `pc-manager:directory-choose` | invoke | Open the native directory picker |
@@ -614,6 +617,7 @@ The renderer clears the active scan findings and tool activity on `started`, the
 Parser guarantees include:
 
 - A structured block must exist and contain valid JSON; narrative text is removed with `stripStructuredBlocks()` before display.
+- If a scan result is cut off by the output limit, complete risk items are recovered and the summary warns that the scan must be narrowed and repeated.
 - Plans with fewer than three steps are rejected and replaced by `fallbackScanPlan()`.
 - At most 200 findings are parsed. IDs are sanitized and deduplicated; missing IDs receive a stable hash based on scan kind, risk kind and target.
 - Findings are sorted by critical, high, medium, low severity, then size and name.
@@ -637,6 +641,7 @@ Default settings:
 | Scan depth | `standard` | `standard` or `deep` |
 | Network drives | `false` | UNC paths rejected by default |
 | Quarantine retention | 30 days | Clamped to 1–365 |
+| Relaxed permissions | `false` | Off by default; skips cleanup review and enables operation mode in chat |
 | Telemetry | `false` | Disabled by default |
 
 `SettingsStore` writes through a temporary file and `rename()` for atomic persistence, and serializes settings/token writes through a queue. API keys are not returned by `publicSettings()`; user-entered keys are encrypted with Electron `safeStorage`. When no encrypted value exists, `DEEPSEEK_API_KEY` is available as a development fallback.
@@ -647,10 +652,10 @@ Runtime data lives under Electron's `app.getPath('userData')`:
 settings.json                 Settings and encrypted credential
 operation-history.json        Up to 80 operation history entries
 dsh-runtime/                  DSH runtime data
-quarantine/<operationId>/     Cleanup quarantine and manifest
+Non-C drive/DSH PC Manager/quarantine/<user key>/  Quarantined files and manifests; existing C-drive data is migrated at startup
 ~~~
 
-These are local user-state files and must not be added to the source repository, test fixtures or screenshots.
+Settings, history and DSH runtime data remain under userData. On Windows, quarantine always uses an available non-C local drive. The app verifies the migration and updates history restore paths; if there is not enough space, cleanup stays unavailable and the app never falls back to C:.
 
 ### 11. Input limits and boundaries
 
@@ -714,7 +719,7 @@ Never place a real credential in source code, `.env`, terminal logs, test fixtur
 | `npm run package:dir` | Generate an unpacked Windows directory |
 | `npm run package` | Generate the NSIS x64 installer |
 
-`npm run package` uses `.electron-builder-cache/`, writes the unpacked application to `release/win-unpacked/` and names the NSIS installer through `package.json` `artifactName`. The current packaging configuration disables asar and copies `resources/dsh/pc-manager.patch.yml` as an extra resource. Changes to the DSH patch or packaging file selection must be verified in both development and packaged paths.
+`npm run package` uses `.electron-builder-cache/`, writes the unpacked application to `release/win-unpacked/` and names the NSIS installer through `package.json` `artifactName`. Packaging disables asar, copies the DSH patch as an extra resource and declares DSH peer plugins as direct production dependencies. Its `afterPack` hook checks the packaged dependency graph and fails the build if a required package is missing.
 
 ### 14. Test matrix
 
@@ -764,7 +769,7 @@ The capture hook waits for `.app-shell`, waits for `.loading-screen` to disappea
 
 ### 16. Secure development conventions
 
-- Keep scans in `read-only` mode by default; only cleanup execution may use `danger-full-access`.
+- Keep scans in `read-only` mode; use `danger-full-access` only for confirmed cleanup or chat after the user enables relaxed permissions and selects operation mode.
 - Bind every destructive action to an exact user-authorized risk ID; never let an Agent expand the scope.
 - Use `-LiteralPath` or an equivalent exact parameter for PowerShell file operations; do not build destructive wildcard commands from unescaped strings.
 - Do not solve disk pressure by deleting system directories; prefer official maintenance commands or a manual recommendation.

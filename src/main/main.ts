@@ -7,6 +7,7 @@ import { BUILT_IN_PRESETS } from './prompt-library.js'
 import { HistoryStore } from './history-store.js'
 import { OperationController } from './operation-controller.js'
 import { suggestLocalPaths } from './path-suggestions.js'
+import { resolveQuarantinePath } from './quarantine-path.js'
 import { SettingsStore } from './settings-store.js'
 import { systemOverview } from './system-overview.js'
 
@@ -159,8 +160,16 @@ function createWindow(fontScale: number): BrowserWindow {
 async function initialize(): Promise<void> {
   const userData = app.getPath('userData')
   const homePath = app.getPath('home')
-  const quarantinePath = join(userData, 'quarantine')
-  const overview = await systemOverview(homePath, quarantinePath)
+  const overview = await systemOverview(homePath)
+  let quarantinePath = ''
+  let quarantineMessage: string | undefined
+  try {
+    quarantinePath = await resolveQuarantinePath(userData, overview.volumes)
+  } catch (error) {
+    quarantineMessage = error instanceof Error ? error.message : String(error)
+  }
+  overview.quarantinePath = quarantinePath
+  if (quarantineMessage !== undefined) overview.quarantineMessage = quarantineMessage
   settingsStore = new SettingsStore(userData)
   await settingsStore.load()
   historyStore = new HistoryStore(userData)
@@ -325,6 +334,7 @@ if (!singleInstance) {
     await initialize()
   }).catch(error => {
     console.error(error)
+    dialog.showErrorBox('无法安全启动 DSH PC Manager', error instanceof Error ? error.message : String(error))
     app.quit()
   })
 }

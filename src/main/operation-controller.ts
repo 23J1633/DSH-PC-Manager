@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import type {
   AppSettings,
   ChatInput,
+  CleanupAuditReport,
   CleanupInput,
   OperationEvent,
   OperationKind,
@@ -156,6 +157,9 @@ export class OperationController {
   }
 
   startCleanup(input: CleanupInput): string {
+    if (this.paths.quarantinePath.trim().length === 0) {
+      throw new Error('找不到可用的非 C 盘隔离目录；清理功能已禁用，请连接可用磁盘后重启。')
+    }
     if (input.risks.length === 0) throw new Error('请至少勾选一个待处理项目')
     if (input.risks.length > 200) throw new Error('单次最多处理 200 个项目')
     const ignoredRisks = Array.isArray(input.ignoredRisks) ? input.ignoredRisks.slice(0, 200) : []
@@ -169,11 +173,12 @@ export class OperationController {
     const normalizedInstructions = input.risks.map(risk => {
       const selected = instructions.find(instruction => instruction.riskId === risk.id)
       const mode = selected?.mode ?? 'recommended'
-      if (mode !== 'recommended' && mode !== 'quarantine' && mode !== 'manual') throw new Error('处理方案无效')
+      if (mode !== 'recommended' && mode !== 'quarantine' && mode !== 'manual' && mode !== 'safe-clean') throw new Error('处理方案无效')
       const instruction = selected?.instruction?.trim().slice(0, 2000)
       if (mode === 'manual' && !instruction) throw new Error(`请填写“${risk.name}”的手动处理方案`)
       return { riskId: risk.id, mode, ...(instruction === undefined ? {} : { instruction }) }
     })
+    const safeCleanupIds = new Set(normalizedInstructions.filter(instruction => instruction.mode === 'safe-clean').map(instruction => instruction.riskId))
     const historyInstructions = [
       ...normalizedInstructions,
       ...ignoredRisks.map(risk => ({ riskId: risk.id, mode: 'ignore' as const })),
@@ -185,42 +190,64 @@ export class OperationController {
     })
     void this.execute(operation, async () => {
       await mkdir(this.paths.quarantinePath, { recursive: true })
-      this.publishProgress(operation, '独立审核 Agent 正在复核', '只读审核会逐项核验证据、误伤风险与可逆性；未通过的项目不会交给清理 Agent。', 5)
-      const auditResult = await operation.runtime.run(cleanupAuditPrompt({
-        rootPath: this.paths.rootPath,
-        quarantinePath: join(this.paths.quarantinePath, operation.id),
-        presetPrompt: currentPreset(settings),
-        sourceScanKind: input.sourceScanKind,
-        risks: structuredClone(input.risks),
-        instructions: structuredClone(normalizedInstructions),
-      }))
-      const auditReport = parseCleanupAuditReport(auditResult.finalResponse, input.risks)
-      this.publish({ type: 'audit-report', operationId: operation.id, report: auditReport })
-      const auditNarrative = stripStructuredBlocks(auditResult.finalResponse)
-      if (auditNarrative.length > 0) this.publish({ type: 'assistant-message', operationId: operation.id, content: `审核 Agent：${auditNarrative}` })
-      const allowedIds = new Set(auditReport.decisions.filter(decision => decision.verdict === 'allow').map(decision => decision.id))
-      const allowedRisks = input.risks.filter(risk => allowedIds.has(risk.id))
-      const allowedInstructions = normalizedInstructions.filter(instruction => allowedIds.has(instruction.riskId))
-      if (allowedRisks.length === 0) {
-        const report = {
-          summary: '独立审核 Agent 未放行任何项目，本次未执行系统修改。',
-          results: input.risks.map(risk => {
-            const decision = auditReport.decisions.find(item => item.id === risk.id)
-            return {
-              id: risk.id,
-              status: 'skipped' as const,
-              action: decision?.verdict === 'deny' ? '审核拒绝' : '需要人工确认',
-              detail: decision?.reason ?? '审核结果缺失，安全跳过。',
-            }
-          }),
-          rebootRecommended: false,
-          followup: auditReport.globalWarnings,
+      let auditReport: CleanupAuditReport | undefined
+      let allowedRisks: RiskItem[]
+      let allowedInstructions: CleanupInput['instructions']
+      const shouldAudit = !settings.relaxedPermissions || safeCleanupIds.size > 0
+      if (!shouldAudit) {
+        allowedRisks = input.risks
+        allowedInstructions = normalizedInstructions
+        this.publishProgress(operation, '放宽权限已启用', '按你勾选的目标和逐项处理方案启动清理；本次跳过独立审核。', 20)
+      } else {
+        this.publishProgress(operation, '独立审核 Agent 正在复核', safeCleanupIds.size > 0
+          ? `只读审核会检查全部目标；${safeCleanupIds.size} 项安全清理将依据审核边界继续执行。`
+          : '只读审核会逐项核验证据、误伤风险与可逆性；未通过的项目不会交给清理 Agent。', 5)
+        const auditResult = await operation.runtime.run(cleanupAuditPrompt({
+          rootPath: this.paths.rootPath,
+          quarantinePath: join(this.paths.quarantinePath, operation.id),
+          presetPrompt: currentPreset(settings),
+          sourceScanKind: input.sourceScanKind,
+          risks: structuredClone(input.risks),
+          instructions: structuredClone(normalizedInstructions),
+        }))
+        const currentAudit = parseCleanupAuditReport(auditResult.finalResponse, input.risks)
+        auditReport = currentAudit
+        this.publish({ type: 'audit-report', operationId: operation.id, report: currentAudit })
+        const auditNarrative = stripStructuredBlocks(auditResult.finalResponse)
+        if (auditNarrative.length > 0) this.publish({ type: 'assistant-message', operationId: operation.id, content: `审核 Agent：${auditNarrative}` })
+        const allowedIds = new Set(currentAudit.decisions.filter(decision => decision.verdict === 'allow').map(decision => decision.id))
+        allowedRisks = input.risks.filter(risk => settings.relaxedPermissions || allowedIds.has(risk.id) || safeCleanupIds.has(risk.id))
+        allowedInstructions = normalizedInstructions.filter(instruction => settings.relaxedPermissions || allowedIds.has(instruction.riskId) || safeCleanupIds.has(instruction.riskId))
+        if (allowedRisks.length === 0) {
+          const report = {
+            summary: '独立审核 Agent 未放行普通处理项目，本次未执行系统修改。',
+            results: input.risks.map(risk => {
+              const decision = currentAudit.decisions.find(item => item.id === risk.id)
+              return {
+                id: risk.id,
+                status: 'skipped' as const,
+                action: decision?.verdict === 'deny' ? '审核拒绝' : '需要人工确认',
+                detail: decision?.reason ?? '审核结果缺失，安全跳过。',
+              }
+            }),
+            rebootRecommended: false,
+            followup: currentAudit.globalWarnings,
+          }
+          this.publish({ type: 'cleanup-report', operationId: operation.id, report })
+          this.complete(operation, report.summary)
+          return
         }
-        this.publish({ type: 'cleanup-report', operationId: operation.id, report })
-        this.complete(operation, report.summary)
-        return
       }
-      this.publishProgress(operation, '审核通过，准备执行', `审核 Agent 放行 ${allowedRisks.length}/${input.risks.length} 项，正在启动隔离的清理 Agent。`, 38)
+      this.publishProgress(
+        operation,
+        '准备执行清理',
+        !shouldAudit
+          ? `放宽权限模式已开启，正在按你授权的 ${allowedRisks.length} 项启动清理 Agent。`
+          : safeCleanupIds.size > 0
+            ? `审核已完成，正在处理 ${allowedRisks.length} 项；安全清理会按审核边界尽力完成所选目标。`
+            : `审核 Agent 放行 ${allowedRisks.length}/${input.risks.length} 项，正在启动隔离的清理 Agent。`,
+        shouldAudit ? 38 : 20,
+      )
       await operation.runtime.close()
       if (operation.cancelled) throw new Error('操作已取消')
       operation.runtime = this.createRuntime(operation, settings, 'danger-full-access')
@@ -231,15 +258,33 @@ export class OperationController {
         sourceScanKind: input.sourceScanKind,
         risks: structuredClone(allowedRisks),
         instructions: structuredClone(allowedInstructions),
-        auditReport,
+        ...(auditReport === undefined ? {} : { auditReport }),
+        relaxedPermissions: settings.relaxedPermissions,
       }))
       this.publishProgress(operation, '生成清理报告', '正在核对每个授权项目的实际结果。', 96)
       const executionReport = parseCleanupReport(result.finalResponse, allowedRisks)
-      const executionById = new Map(executionReport.results.map(item => [item.id, item]))
-      const decisionById = new Map(auditReport.decisions.map(item => [item.id, item]))
+      const executionById = new Map(executionReport.results.map(item => {
+        if (safeCleanupIds.has(item.id) && item.status === 'skipped') {
+          return [item.id, {
+            ...item,
+            status: 'failed' as const,
+            action: '安全清理未完成',
+            detail: `该项目选择了安全清理，Agent 未执行清理动作；原结果：${item.detail}`,
+          }] as const
+        }
+        return [item.id, item] as const
+      }))
+      const decisionById = new Map(auditReport?.decisions.map(item => [item.id, item]) ?? [])
+      const ordinaryAllowedCount = allowedRisks.filter(risk => !safeCleanupIds.has(risk.id)).length
+      const ordinaryInputCount = input.risks.filter(risk => !safeCleanupIds.has(risk.id)).length
+      const executionSummary = auditReport === undefined
+        ? `放宽权限模式已启用，按用户授权的 ${allowedRisks.length} 项执行。${executionReport.summary}`
+        : safeCleanupIds.size > 0
+          ? `审核完成：普通方案放行 ${ordinaryAllowedCount}/${ordinaryInputCount} 项，${safeCleanupIds.size} 项安全清理按审核边界继续。${executionReport.summary}`
+          : `审核 Agent 放行 ${allowedRisks.length}/${input.risks.length} 项。${executionReport.summary}`
       const report = {
         ...executionReport,
-        summary: `审核 Agent 放行 ${allowedRisks.length}/${input.risks.length} 项。${executionReport.summary}`,
+        summary: executionSummary,
         results: input.risks.map(risk => {
           const executed = executionById.get(risk.id)
           if (executed !== undefined) return executed
@@ -251,7 +296,7 @@ export class OperationController {
             detail: decision?.reason ?? '未通过独立审核，安全跳过。',
           }
         }),
-        followup: [...auditReport.globalWarnings, ...executionReport.followup],
+        followup: [...(auditReport?.globalWarnings ?? []), ...executionReport.followup],
       }
       this.publish({ type: 'cleanup-report', operationId: operation.id, report })
       const narrative = stripStructuredBlocks(result.finalResponse)
@@ -266,14 +311,16 @@ export class OperationController {
     if (message.length === 0) throw new Error('请输入消息')
     const referencedPaths = await this.validatePathReferences(Array.isArray(input.referencedPaths) ? input.referencedPaths : [])
     const settings = this.settingsStore.publicSettings()
-    const operation = this.createOperation('chat', 'read-only', settings)
+    const operationMode = input.operationMode === true
+    if (operationMode && !settings.relaxedPermissions) throw new Error('请先在设置中启用“放宽操作权限”')
+    const operation = this.createOperation('chat', operationMode ? 'danger-full-access' : 'read-only', settings)
     void this.execute(operation, async () => {
-      this.publishProgress(operation, '只读咨询', 'Agent 正在结合当前风险清单分析问题。', 12)
+      this.publishProgress(operation, operationMode ? '可操作模式' : '只读咨询', operationMode ? 'Agent 正在按你的明确指令操作；请检查每项系统变更。' : 'Agent 正在结合当前风险清单分析问题。', 12)
       const relatedRisks = Array.isArray(input.relatedRisks) ? input.relatedRisks.slice(0, 50) : []
-      const result = await operation.runtime.run(chatPrompt(message.slice(0, 20_000), relatedRisks, currentPreset(settings), referencedPaths))
+      const result = await operation.runtime.run(chatPrompt(message.slice(0, 20_000), relatedRisks, currentPreset(settings), referencedPaths, operationMode))
       const answer = result.finalResponse.trim() || 'Agent 未返回可显示的答复。'
       this.publish({ type: 'assistant-message', operationId: operation.id, content: answer })
-      this.complete(operation, 'Agent 已完成答复')
+      this.complete(operation, operationMode ? 'Agent 已完成可操作模式请求' : 'Agent 已完成只读答复')
     })
     return operation.id
   }
@@ -363,7 +410,7 @@ export class OperationController {
       baseUrl: settings.baseUrl,
       permissionMode,
       telemetryEnabled: settings.telemetryEnabled,
-      maxTokens: operation.kind === 'chat' ? 4096 : 16_384,
+      maxTokens: operation.kind === 'chat' ? 8192 : 65_536,
       ...(this.paths.runtimeExecutable === undefined ? {} : { runtimeExecutable: this.paths.runtimeExecutable }),
       onNotification: notification => { this.onNotification(operation, notification) },
     })

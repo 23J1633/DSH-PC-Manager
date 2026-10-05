@@ -1451,6 +1451,47 @@ button:disabled {
   gap: 8px;
 }
 
+.chat-header-main {
+  min-width: 0;
+}
+
+.chat-mode-switch {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-soft);
+}
+
+.chat-mode-switch button {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 7px;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 8px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.chat-mode-switch button.active {
+  background: var(--bg-elevated);
+  color: var(--green);
+  box-shadow: 0 1px 4px rgb(24 31 53 / 10%);
+}
+
+.chat-mode-switch button.active.operate {
+  color: var(--amber);
+}
+
+.chat-mode-switch button:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+
 .bot-avatar {
   display: grid;
   width: 28px;
@@ -1485,9 +1526,32 @@ button:disabled {
 }
 
 .chat-messages {
+  min-height: 0;
   overflow: auto;
   padding: 11px 16px;
   background: color-mix(in srgb, var(--bg-soft) 64%, var(--bg-elevated));
+}
+
+.chat-operation-warning {
+  position: sticky;
+  z-index: 2;
+  top: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: -2px -4px 9px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--amber) 28%, var(--border));
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  color: var(--text-soft);
+  font-size: 8.5px;
+  line-height: 1.45;
+}
+
+.chat-operation-warning svg {
+  flex: 0 0 auto;
+  color: var(--amber);
 }
 
 .chat-welcome {
@@ -2104,6 +2168,18 @@ button:disabled {
   color: color-mix(in srgb, var(--green) 70%, var(--text));
   font-size: 8.5px;
   line-height: 1.5;
+}
+
+.authorization-scope.relaxed,
+.privacy-note.relaxed {
+  border-color: color-mix(in srgb, var(--amber) 35%, var(--border));
+  background: color-mix(in srgb, var(--amber) 10%, var(--bg-elevated));
+  color: var(--amber);
+}
+
+.authorization-scope.relaxed span,
+.privacy-note.relaxed p {
+  color: var(--text-soft);
 }
 
 .confirm-check {
@@ -3597,11 +3673,13 @@ select option {
 
 .history-backdrop {
   z-index: 95;
+  align-items: stretch;
 }
 
 .history-panel {
-  display: grid;
-  grid-template-rows: 62px minmax(0, 1fr);
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
   width: min(720px, calc(100vw - 70px));
   height: 100%;
   border-left: 1px solid var(--border);
@@ -3611,6 +3689,7 @@ select option {
 }
 
 .history-panel > header {
+  flex: 0 0 62px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -3653,7 +3732,11 @@ select option {
 }
 
 .history-content {
-  overflow: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 16px 18px 28px;
   background: var(--bg-soft);
 }
@@ -3955,6 +4038,11 @@ select option {
   .chat-header-actions > span,
   .send-hint {
     display: none;
+  }
+
+  .chat-mode-switch button {
+    padding: 4px 5px;
+    font-size: 7.5px;
   }
 
   .history-panel {

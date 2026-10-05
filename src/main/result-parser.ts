@@ -44,16 +44,142 @@ function stringList(value: unknown, maxItems = 20): string[] {
     .map(entry => entry.trim().slice(0, 1000))
 }
 
-function markedJson(source: string, marker: string): unknown {
+interface MarkedJsonResult {
+  value: unknown
+  truncated: boolean
+}
+
+function quotedStringEnd(source: string, start: number): number | undefined {
+  if (source[start] !== '"') return undefined
+  let escaped = false
+  for (let index = start + 1; index < source.length; index += 1) {
+    const character = source[index]
+    if (escaped) escaped = false
+    else if (character === '\\') escaped = true
+    else if (character === '"') return index + 1
+  }
+  return undefined
+}
+
+function completeJsonValueEnd(source: string, start: number): number | undefined {
+  const first = source[start]
+  if (first === '"') return quotedStringEnd(source, start)
+  if (first !== '{' && first !== '[') {
+    let end = start
+    while (end < source.length && !/[\s,}\]]/u.test(source[end] ?? '')) end += 1
+    if (end === source.length && !/^(?:true|false|null|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)$/u.test(source.slice(start, end))) return undefined
+    return end > start ? end : undefined
+  }
+
+  const closers: string[] = []
+  let quoted = false
+  let escaped = false
+  for (let index = start; index < source.length; index += 1) {
+    const character = source[index]
+    if (quoted) {
+      if (escaped) escaped = false
+      else if (character === '\\') escaped = true
+      else if (character === '"') quoted = false
+      continue
+    }
+    if (character === '"') quoted = true
+    else if (character === '{') closers.push('}')
+    else if (character === '[') closers.push(']')
+    else if (character === '}' || character === ']') {
+      if (closers.pop() !== character) return undefined
+      if (closers.length === 0) return index + 1
+    }
+  }
+  return undefined
+}
+
+function salvageTruncatedScanResult(body: string): Record<string, unknown> | undefined {
+  const source = body.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
+  if (!source.startsWith('{')) return undefined
+  const recovered: Record<string, unknown> = {}
+  let index = 1
+  while (index < source.length) {
+    while (/\s/u.test(source[index] ?? '')) index += 1
+    if (source[index] !== '"') break
+    const keyEnd = quotedStringEnd(source, index)
+    if (keyEnd === undefined) break
+    let key: unknown
+    try {
+      key = JSON.parse(source.slice(index, keyEnd)) as unknown
+    } catch {
+      break
+    }
+    if (typeof key !== 'string') break
+    index = keyEnd
+    while (/\s/u.test(source[index] ?? '')) index += 1
+    if (source[index] !== ':') break
+    index += 1
+    while (/\s/u.test(source[index] ?? '')) index += 1
+
+    if (key === 'risks' && source[index] === '[') {
+      index += 1
+      const items: unknown[] = []
+      while (index < source.length) {
+        while (/\s/u.test(source[index] ?? '')) index += 1
+        if (source[index] === ']') {
+          recovered.risks = items
+          return items.some(item => record(item) !== undefined) ? recovered : undefined
+        }
+        const end = completeJsonValueEnd(source, index)
+        if (end === undefined) break
+        try {
+          const item: unknown = JSON.parse(source.slice(index, end))
+          if (record(item) !== undefined) items.push(item)
+        } catch {
+          break
+        }
+        index = end
+        while (/\s/u.test(source[index] ?? '')) index += 1
+        if (source[index] === ',') {
+          index += 1
+          continue
+        }
+        if (source[index] === ']') {
+          recovered.risks = items
+          return items.some(item => record(item) !== undefined) ? recovered : undefined
+        }
+        break
+      }
+      recovered.risks = items
+      return items.some(item => record(item) !== undefined) ? recovered : undefined
+    }
+
+    const valueEnd = completeJsonValueEnd(source, index)
+    if (valueEnd === undefined) break
+    try {
+      recovered[key] = JSON.parse(source.slice(index, valueEnd)) as unknown
+    } catch {
+      break
+    }
+    index = valueEnd
+    while (/\s/u.test(source[index] ?? '')) index += 1
+    if (source[index] !== ',') break
+    index += 1
+  }
+  return undefined
+}
+
+function markedJson(source: string, marker: string): MarkedJsonResult {
   const open = `<${marker}>`
   const close = `</${marker}>`
   const start = source.lastIndexOf(open)
   if (start < 0) throw new Error(`Agent 未返回 ${open} 结果块`)
   const end = source.indexOf(close, start + open.length)
-  if (end < 0) throw new Error(`Agent 返回的 ${open} 结果块不完整`)
+  if (end < 0) {
+    if (marker === 'dsh-pc-manager-result') {
+      const salvaged = salvageTruncatedScanResult(source.slice(start + open.length))
+      if (salvaged !== undefined) return { value: salvaged, truncated: true }
+    }
+    throw new Error(`Agent 返回的 ${open} 结果块不完整`)
+  }
   const body = source.slice(start + open.length, end).trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
   try {
-    return JSON.parse(body)
+    return { value: JSON.parse(body) as unknown, truncated: false }
   } catch (error) {
     throw new Error(`Agent 返回的 JSON 无法解析：${error instanceof Error ? error.message : String(error)}`)
   }
@@ -102,10 +228,11 @@ function normalizedRisk(value: unknown, scanKind: ScanKind): RiskItem | undefine
 export interface ScanReport {
   summary: string
   risks: RiskItem[]
+  truncated?: boolean
 }
 
 export function parseOperationPlan(source: string): OperationPlan {
-  const result = record(markedJson(source, 'dsh-pc-manager-plan'))
+  const result = record(markedJson(source, 'dsh-pc-manager-plan').value)
   if (result === undefined) throw new Error('Agent 扫描计划不是 JSON 对象')
   const candidates = Array.isArray(result.steps) ? result.steps : []
   const steps: OperationPlanStep[] = []
@@ -137,7 +264,8 @@ export function parseOperationPlan(source: string): OperationPlan {
 }
 
 export function parseScanReport(source: string, scanKind: ScanKind): ScanReport {
-  const result = record(markedJson(source, 'dsh-pc-manager-result'))
+  const parsed = markedJson(source, 'dsh-pc-manager-result')
+  const result = record(parsed.value)
   if (result === undefined) throw new Error('Agent 风险结果不是 JSON 对象')
   const candidates = Array.isArray(result.risks) ? result.risks : []
   const ids = new Set<string>()
@@ -155,13 +283,16 @@ export function parseScanReport(source: string, scanKind: ScanKind): ScanReport 
     || (right.sizeBytes ?? -1) - (left.sizeBytes ?? -1)
     || left.name.localeCompare(right.name, 'zh-CN', { numeric: true }))
   return {
-    summary: text(result.summary, risks.length === 0 ? '未发现明确风险项。' : `发现 ${risks.length} 个待复核项目。`, 4000),
+    summary: parsed.truncated
+      ? `输出达到上限，已恢复 ${risks.length} 条完整风险项；请缩小扫描范围复查其余内容。${text(result.summary, '', 3500)}`.slice(0, 4000)
+      : text(result.summary, risks.length === 0 ? '未发现明确风险项。' : `发现 ${risks.length} 个待复核项目。`, 4000),
     risks,
+    ...(parsed.truncated ? { truncated: true } : {}),
   }
 }
 
 export function parseCleanupReport(source: string, authorizedRisks: readonly RiskItem[]): CleanupReport {
-  const result = record(markedJson(source, 'dsh-pc-manager-cleanup'))
+  const result = record(markedJson(source, 'dsh-pc-manager-cleanup').value)
   if (result === undefined) throw new Error('Agent 清理结果不是 JSON 对象')
   const authorized = new Map(authorizedRisks.map(risk => [risk.id, risk]))
   const seen = new Set<string>()
@@ -203,7 +334,7 @@ export function parseCleanupReport(source: string, authorizedRisks: readonly Ris
 }
 
 export function parseCleanupAuditReport(source: string, authorizedRisks: readonly RiskItem[]): CleanupAuditReport {
-  const result = record(markedJson(source, 'dsh-pc-manager-audit'))
+  const result = record(markedJson(source, 'dsh-pc-manager-audit').value)
   if (result === undefined) throw new Error('审核 Agent 结果不是 JSON 对象')
   const authorizedIds = new Set(authorizedRisks.map(risk => risk.id))
   const seen = new Set<string>()
