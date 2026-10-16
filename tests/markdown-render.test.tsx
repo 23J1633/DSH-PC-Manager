@@ -27,4 +27,12 @@ Get-Process
     expect(html).toContain('<code class="language-powershell">Get-Process')
     expect(html).toContain('href="https://example.com/docs"')
   })
+
+  it('links marked paths exactly and keeps trailing prose outside unmarked legacy paths', () => {
+    const html = renderToStaticMarkup(<MarkdownContent content={'标记路径：⟦PATH⟧D:\\Program Files\\Example App\\cache⟦/PATH⟧；旧格式：D:\\Temp\\cache 仍需检查。'} />)
+
+    expect(html).toContain('>D:\\Program Files\\Example App\\cache</button>')
+    expect(html).toContain('>D:\\Temp\\cache</button> 仍需检查。')
+    expect(html).not.toContain('>D:\\Temp\\cache 仍需检查</button>')
+  })
 })

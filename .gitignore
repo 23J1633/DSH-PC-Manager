@@ -19,6 +19,7 @@ builder-effective-config.yaml
 .vite/
 .electron-builder-cache/
 .dsh-smoke/
+.ui-smoke-profile/
 .dsh-smoke-v2-*/
 .tmp-dsh-debug/
 artifacts/

@@ -2,7 +2,7 @@
 
 [中文](#中文) · [English](#english)
 
-Version 1.0.0 · Windows 10/11 · MIT License
+Version 1.0.2 · Windows 10/11 · MIT License
 
 > 中文：基于 DeepSeek Harness 的 Windows 桌面电脑管家。应用将只读系统观察、风险结构化、独立审核和可逆清理组织成一条可追踪的 Agent 工作流。
 >

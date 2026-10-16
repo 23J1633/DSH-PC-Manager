@@ -35,7 +35,7 @@ export interface DshRuntimeOptions {
   reasoningEffort: ReasoningEffort
   apiKey: string
   baseUrl: string
-  permissionMode: 'read-only' | 'danger-full-access'
+  permissionMode: 'read-only' | 'workspace-write' | 'danger-full-access'
   telemetryEnabled: boolean
   maxTokens?: number
   runtimeExecutable?: string

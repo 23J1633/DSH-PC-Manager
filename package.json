@@ -1,6 +1,6 @@
 {
   "name": "dsh-pc-manager",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "AI computer manager powered by DeepSeek Harness",
   "keywords": [
     "electron",
@@ -33,7 +33,7 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "start": "npm run build && electron .",
-    "test": "vitest run tests/result-parser.test.ts tests/connection-test.test.ts tests/path-suggestions.test.ts tests/history-store.test.ts tests/dsh-windows-patch.test.ts tests/markdown-render.test.tsx",
+    "test": "vitest run tests/result-parser.test.ts tests/connection-test.test.ts tests/path-suggestions.test.ts tests/history-store.test.ts tests/history-grouping.test.ts tests/memory-cleanup.test.ts tests/dsh-windows-patch.test.ts tests/markdown-render.test.tsx",
     "test:integration": "vitest run tests/dsh-runtime.integration.test.ts",
     "test:hidden-window": "node scripts/hidden-window-smoke.cjs",
     "test:shortcut": "electron scripts/shortcut-smoke.cjs",

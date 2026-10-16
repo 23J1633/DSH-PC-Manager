@@ -1,7 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { safeStorage } from 'electron'
-import type { AgentPreset, AppSettings, ReasoningEffort, SaveSettingsInput, TokenUsage } from '../shared/types.js'
+import type { AgentPreset, AppSettings, AppStatisticsSnapshot, DailyAppStatistics, ReasoningEffort, SaveSettingsInput, TokenUsage } from '../shared/types.js'
 import { EMPTY_TOKEN_USAGE } from '../shared/types.js'
 
 interface SettingsDocument {
@@ -21,6 +21,16 @@ interface SettingsDocument {
   relaxedPermissions: boolean
   telemetryEnabled: boolean
   lifetimeUsage: TokenUsage
+  statistics: AppStatisticsSnapshot
+}
+
+const EMPTY_STATISTICS: AppStatisticsSnapshot = {
+  lifetimeRequests: 0,
+  lifetimeScans: 0,
+  lifetimeScannedItems: 0,
+  lifetimeCleanupRuns: 0,
+  lifetimeCleanedItems: 0,
+  daily: [],
 }
 
 const DEFAULT_DOCUMENT: SettingsDocument = {
@@ -39,6 +49,7 @@ const DEFAULT_DOCUMENT: SettingsDocument = {
   relaxedPermissions: false,
   telemetryEnabled: false,
   lifetimeUsage: { ...EMPTY_TOKEN_USAGE },
+  statistics: structuredClone(EMPTY_STATISTICS),
 }
 
 function limitedText(value: unknown, fallback: string, maxLength: number): string {
@@ -71,6 +82,42 @@ function normalizedUsage(value: unknown): TokenUsage {
     cacheReadTokens: finiteToken(usage.cacheReadTokens),
     cacheWriteTokens: finiteToken(usage.cacheWriteTokens),
     reasoningTokens: finiteToken(usage.reasoningTokens),
+  }
+}
+
+function localDateKey(timestamp = Date.now()): string {
+  const date = new Date(timestamp)
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${date.getFullYear()}-${month}-${day}`
+}
+
+function normalizedStatistics(value: unknown): AppStatisticsSnapshot {
+  const input = typeof value === 'object' && value !== null ? value as Record<string, unknown> : {}
+  const integer = (candidate: unknown): number => typeof candidate === 'number' && Number.isSafeInteger(candidate) && candidate >= 0 ? candidate : 0
+  const daily: DailyAppStatistics[] = Array.isArray(input.daily)
+    ? input.daily.slice(-370).flatMap(candidate => {
+      if (typeof candidate !== 'object' || candidate === null || Array.isArray(candidate)) return []
+      const entry = candidate as Record<string, unknown>
+      if (typeof entry.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/u.test(entry.date)) return []
+      return [{
+        date: entry.date,
+        requests: integer(entry.requests),
+        scans: integer(entry.scans),
+        scannedItems: integer(entry.scannedItems),
+        cleanupRuns: integer(entry.cleanupRuns),
+        cleanedItems: integer(entry.cleanedItems),
+        tokenUsage: normalizedUsage(entry.tokenUsage),
+      }]
+    })
+    : []
+  return {
+    lifetimeRequests: integer(input.lifetimeRequests),
+    lifetimeScans: integer(input.lifetimeScans),
+    lifetimeScannedItems: integer(input.lifetimeScannedItems),
+    lifetimeCleanupRuns: integer(input.lifetimeCleanupRuns),
+    lifetimeCleanedItems: integer(input.lifetimeCleanedItems),
+    daily,
   }
 }
 
@@ -132,6 +179,7 @@ function normalizeDocument(value: unknown): SettingsDocument {
     relaxedPermissions: input.relaxedPermissions === true,
     telemetryEnabled: input.telemetryEnabled === true,
     lifetimeUsage: normalizedUsage(input.lifetimeUsage),
+    statistics: normalizedStatistics(input.statistics),
   }
 }
 
@@ -215,6 +263,11 @@ export class SettingsStore {
     return { ...this.document.lifetimeUsage }
   }
 
+  statistics(): AppStatisticsSnapshot {
+    this.assertLoaded()
+    return structuredClone(this.document.statistics)
+  }
+
   async addUsage(delta: TokenUsage): Promise<TokenUsage> {
     this.assertLoaded()
     return this.enqueue(async () => {
@@ -227,13 +280,80 @@ export class SettingsStore {
         cacheWriteTokens: current.cacheWriteTokens + delta.cacheWriteTokens,
         reasoningTokens: current.reasoningTokens + delta.reasoningTokens,
       }
+      const daily = this.ensureDailyStatistics()
+      daily.tokenUsage = {
+        inputTokens: daily.tokenUsage.inputTokens + delta.inputTokens,
+        outputTokens: daily.tokenUsage.outputTokens + delta.outputTokens,
+        totalTokens: daily.tokenUsage.totalTokens + delta.totalTokens,
+        cacheReadTokens: daily.tokenUsage.cacheReadTokens + delta.cacheReadTokens,
+        cacheWriteTokens: daily.tokenUsage.cacheWriteTokens + delta.cacheWriteTokens,
+        reasoningTokens: daily.tokenUsage.reasoningTokens + delta.reasoningTokens,
+      }
       await this.persist()
       return this.lifetimeUsage()
     })
   }
 
+  async recordRequest(): Promise<AppStatisticsSnapshot> {
+    this.assertLoaded()
+    return this.enqueue(async () => {
+      this.document.statistics.lifetimeRequests += 1
+      this.ensureDailyStatistics().requests += 1
+      await this.persist()
+      return this.statistics()
+    })
+  }
+
+  async recordScan(scannedItems: number): Promise<AppStatisticsSnapshot> {
+    this.assertLoaded()
+    return this.enqueue(async () => {
+      const count = Math.max(0, Math.floor(scannedItems))
+      this.document.statistics.lifetimeScans += 1
+      this.document.statistics.lifetimeScannedItems += count
+      const daily = this.ensureDailyStatistics()
+      daily.scans += 1
+      daily.scannedItems += count
+      await this.persist()
+      return this.statistics()
+    })
+  }
+
+  async recordCleanup(cleanedItems: number): Promise<AppStatisticsSnapshot> {
+    this.assertLoaded()
+    return this.enqueue(async () => {
+      const count = Math.max(0, Math.floor(cleanedItems))
+      this.document.statistics.lifetimeCleanupRuns += 1
+      this.document.statistics.lifetimeCleanedItems += count
+      const daily = this.ensureDailyStatistics()
+      daily.cleanupRuns += 1
+      daily.cleanedItems += count
+      await this.persist()
+      return this.statistics()
+    })
+  }
+
   private assertLoaded(): void {
     if (!this.loaded) throw new Error('设置尚未加载')
+  }
+
+  private ensureDailyStatistics(timestamp = Date.now()): DailyAppStatistics {
+    const date = localDateKey(timestamp)
+    let entry = this.document.statistics.daily.find(item => item.date === date)
+    if (entry === undefined) {
+      entry = {
+        date,
+        requests: 0,
+        scans: 0,
+        scannedItems: 0,
+        cleanupRuns: 0,
+        cleanedItems: 0,
+        tokenUsage: { ...EMPTY_TOKEN_USAGE },
+      }
+      this.document.statistics.daily.push(entry)
+      this.document.statistics.daily.sort((left, right) => left.date.localeCompare(right.date))
+      if (this.document.statistics.daily.length > 370) this.document.statistics.daily.splice(0, this.document.statistics.daily.length - 370)
+    }
+    return entry
   }
 
   private async persist(): Promise<void> {

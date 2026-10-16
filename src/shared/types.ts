@@ -1,9 +1,11 @@
 export type ScanKind = 'disk' | 'virus'
-export type OperationKind = ScanKind | 'cleanup' | 'chat' | 'connection-test'
-export type OperationState = 'idle' | 'starting' | 'running' | 'cancelling' | 'completed' | 'failed' | 'cancelled'
+export type RiskScanKind = ScanKind | 'memory'
+export type OperationKind = ScanKind | 'cleanup' | 'chat' | 'repair' | 'connection-test' | 'memory'
+export type OperationState = 'idle' | 'starting' | 'running' | 'cancelling' | 'completed' | 'failed' | 'cancelled' | 'interrupted'
 export type Severity = 'low' | 'medium' | 'high' | 'critical'
 export type ReasoningEffort = 'off' | 'low' | 'high' | 'max'
 export type CleanupActionMode = 'recommended' | 'ignore' | 'quarantine' | 'manual' | 'safe-clean'
+export type MemoryOptimizationAction = 'trim-working-set'
 
 export interface ScanTarget {
   type: 'drive' | 'directory'
@@ -22,11 +24,12 @@ export type RiskKind =
   | 'registry'
   | 'network'
   | 'browser-extension'
+  | 'application'
   | 'other'
 
 export interface RiskItem {
   id: string
-  scanKind: ScanKind
+  scanKind: RiskScanKind
   kind: RiskKind
   name: string
   target: string
@@ -39,6 +42,47 @@ export interface RiskItem {
   selectedByDefault: boolean
   reversible: boolean
   cleanupHint?: string
+  applicationId?: string
+  memoryCandidate?: MemoryProcessCandidate
+}
+
+export interface MemoryProcessCandidate {
+  pid: number
+  name: string
+  memoryBytes: number
+  reason: string
+}
+
+export interface MemoryOverview {
+  totalBytes: number
+  availableBytes: number
+  candidates: MemoryProcessCandidate[]
+  checkedAt: number
+  analysisSummary?: string
+}
+
+export interface MemoryOptimizationResult {
+  requested: number
+  optimized: number
+  reclaimedBytes: number
+  details: Array<{ pid: number; name: string; beforeBytes: number; afterBytes: number; success: boolean; message: string }>
+  agentSummary?: string
+}
+
+export interface QuarantineClearResult {
+  removedCount: number
+}
+
+export interface InstalledSoftwareItem {
+  id: string
+  name: string
+  publisher: string
+  version: string
+  installDate?: string
+  installLocation: string
+  sizeBytes: number
+  uninstallAvailable: boolean
+  maintenanceAvailable: boolean
 }
 
 export interface TokenUsage {
@@ -115,7 +159,45 @@ export interface BootstrapData {
   settings: AppSettings
   system: SystemOverview
   lifetimeUsage: TokenUsage
+  statistics: AppStatisticsSnapshot
   builtInPresets: AgentPreset[]
+}
+
+export interface DailyAppStatistics {
+  date: string
+  requests: number
+  scans: number
+  scannedItems: number
+  cleanupRuns: number
+  cleanedItems: number
+  tokenUsage: TokenUsage
+}
+
+export interface AppStatisticsSnapshot {
+  lifetimeRequests: number
+  lifetimeScans: number
+  lifetimeScannedItems: number
+  lifetimeCleanupRuns: number
+  lifetimeCleanedItems: number
+  daily: DailyAppStatistics[]
+}
+
+export interface AgentTraceEntry {
+  id: string
+  type: string
+  turn: number
+  step: number
+  label: string
+  detail: string
+  input?: string
+  output?: string
+  reasoning?: string
+  time: number
+  durationMs?: number
+  inputTokens?: number
+  outputTokens?: number
+  reasoningTokens?: number
+  isError?: boolean
 }
 
 export interface CleanupResultItem {
@@ -187,6 +269,33 @@ export interface OperationHistoryEntry {
   auditReport?: CleanupAuditReport
   cleanupReport?: CleanupReport
   cleanupInstructions?: CleanupInstruction[]
+  canResume?: boolean
+  resumeState?: OperationResumeState
+  resumedFrom?: string
+  relatedOperationId?: string
+  requestCount?: number
+  trajectory?: AgentTraceEntry[]
+  selectedRiskIds?: string[]
+  steeringNotes?: string[]
+}
+
+export type OperationResumePhase = 'scan-planning' | 'scan-execution' | 'cleanup-audit' | 'cleanup-execution' | 'chat' | 'repair'
+
+export type OperationResumeTask =
+  | { kind: 'scan'; scanKind: ScanKind; targets: ScanTarget[] }
+  | { kind: 'cleanup'; input: CleanupInput; quarantineId: string; relaxedPermissions?: boolean }
+  | { kind: 'chat'; input: ChatInput }
+  | { kind: 'repair'; errorText: string }
+
+export interface OperationResumeState {
+  task: OperationResumeTask
+  sessionIds: { readOnly: string; writable: string; repair: string }
+  phase: OperationResumePhase
+}
+
+export interface OperationResumeSnapshot {
+  entry: OperationHistoryEntry
+  resumeState: OperationResumeState
 }
 
 export type OperationEvent =
@@ -201,6 +310,14 @@ export type OperationEvent =
       targets?: ScanTarget[]
       authorizedRisks?: RiskItem[]
       cleanupInstructions?: CleanupInstruction[]
+      resumeState?: OperationResumeState
+      resumedFrom?: string
+      relatedOperationId?: string
+    }
+  | {
+      type: 'checkpoint'
+      operationId: string
+      resumeState: OperationResumeState
     }
   | {
       type: 'plan'
@@ -226,15 +343,42 @@ export type OperationEvent =
       time: number
     }
   | {
+      type: 'trace'
+      operationId: string
+      entry: AgentTraceEntry
+    }
+  | {
+      type: 'steering'
+      operationId: string
+      message: string
+      cleanup: CleanupInput
+      time: number
+    }
+  | {
+      type: 'statistics'
+      operationId: string
+      statistics: AppStatisticsSnapshot
+    }
+  | {
       type: 'tokens'
       operationId: string
       operationUsage: TokenUsage
       lifetimeUsage: TokenUsage
     }
   | {
+      type: 'memory-overview'
+      operationId: string
+      overview: MemoryOverview
+    }
+  | {
+      type: 'memory-result'
+      operationId: string
+      result: MemoryOptimizationResult
+    }
+  | {
       type: 'risks'
       operationId: string
-      scanKind: ScanKind
+      scanKind: RiskScanKind
       summary: string
       risks: RiskItem[]
     }
@@ -272,6 +416,7 @@ export type OperationEvent =
       operationId: string
       finishedAt: number
       operationUsage: TokenUsage
+      summary?: string
     }
 
 export interface StartOperationResult {
@@ -279,10 +424,18 @@ export interface StartOperationResult {
 }
 
 export interface CleanupInput {
-  sourceScanKind: ScanKind
+  sourceScanKind: RiskScanKind
+  sourceOperationId?: string
+  steeringNotes?: string[]
   risks: RiskItem[]
   ignoredRisks?: RiskItem[]
   instructions: CleanupInstruction[]
+}
+
+export interface CleanupSteeringInput {
+  operationId: string
+  cleanup: CleanupInput
+  message: string
 }
 
 export interface CleanupInstruction {
@@ -304,11 +457,18 @@ export interface PcManagerApi {
   startScan(kind: ScanKind, targets: ScanTarget[]): Promise<StartOperationResult>
   startCleanup(input: CleanupInput): Promise<StartOperationResult>
   sendChat(input: ChatInput): Promise<StartOperationResult>
+  startSelfRepair(errorText: string): Promise<StartOperationResult>
+  steerCleanup(input: CleanupSteeringInput): Promise<void>
   cancelOperation(operationId: string): Promise<void>
+  resumeOperation(historyEntryId: string): Promise<StartOperationResult>
   testConnection(settings: Pick<SaveSettingsInput, 'provider' | 'model' | 'baseUrl' | 'apiKey'>): Promise<string>
   chooseDirectory(): Promise<ScanTarget | undefined>
   suggestPaths(query: string): Promise<PathSuggestion[]>
   listHistory(): Promise<OperationHistoryEntry[]>
+  inspectMemory(): Promise<MemoryOverview>
+  startMemoryAnalysis(): Promise<StartOperationResult>
+  startMemoryOptimization(candidates: MemoryProcessCandidate[]): Promise<StartOperationResult>
+  clearQuarantine(): Promise<QuarantineClearResult>
   createDesktopShortcut(): Promise<string>
   requestElevation(): Promise<boolean>
   openPath(path: string): Promise<void>

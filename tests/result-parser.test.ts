@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { cleanupAuditPrompt, diskScanPrompt } from '../src/main/prompt-library.js'
-import { parseCleanupAuditReport, parseCleanupReport, parseOperationPlan, parseScanReport } from '../src/main/result-parser.js'
-import type { RiskItem } from '../src/shared/types.js'
+import { parseCleanupAuditReport, parseCleanupReport, parseMemoryAgentReview, parseMemoryOptimizationReview, parseOperationPlan, parseScanReport, stripStructuredBlocks } from '../src/main/result-parser.js'
+import type { MemoryOverview, RiskItem } from '../src/shared/types.js'
 
 const risk: RiskItem = {
   id: 'disk-cache-1',
@@ -31,6 +31,45 @@ describe('structured Agent result parsing', () => {
     })}</dsh-pc-manager-plan>`)
     expect(plan.source).toBe('agent')
     expect(plan.steps.map(step => step.id)).toEqual(['baseline', 'inspect', 'report'])
+  })
+
+  it('accepts only Agent memory recommendations that match the current process snapshot', () => {
+    const overview: MemoryOverview = {
+      totalBytes: 16 * 1024 ** 3,
+      availableBytes: 4 * 1024 ** 3,
+      checkedAt: 123,
+      candidates: [
+        { pid: 41, name: 'Browser', memoryBytes: 700 * 1024 ** 2, reason: 'raw snapshot' },
+        { pid: 42, name: 'Editor', memoryBytes: 500 * 1024 ** 2, reason: 'raw snapshot' },
+      ],
+    }
+    const review = parseMemoryAgentReview(`<dsh-pc-manager-memory>${JSON.stringify({
+      summary: '两个进程值得由用户复核。',
+      candidates: [
+        { pid: 41, reason: '普通浏览器进程，回收后仍会运行。' },
+        { pid: 41, reason: 'duplicate' },
+        { pid: 999, reason: 'not in snapshot' },
+      ],
+    })}</dsh-pc-manager-memory>`, overview)
+
+    expect(review.summary).toBe('两个进程值得由用户复核。')
+    expect(review.candidates).toEqual([{ ...overview.candidates[0], reason: '普通浏览器进程，回收后仍会运行。' }])
+  })
+
+  it('limits final Agent memory approval to the exact user-selected PIDs', () => {
+    const selected = [
+      { pid: 41, name: 'Browser', memoryBytes: 700 * 1024 ** 2, reason: 'user-selected' },
+      { pid: 42, name: 'Editor', memoryBytes: 500 * 1024 ** 2, reason: 'user-selected' },
+    ]
+    const review = parseMemoryOptimizationReview(`<dsh-pc-manager-memory-review>${JSON.stringify({
+      summary: '复核完成。',
+      approvedPids: [41, 999, 41],
+      rejected: [{ pid: 42, reason: '用途不明，跳过。' }],
+    })}</dsh-pc-manager-memory-review>`, selected)
+
+    expect(review.approvedPids).toEqual([41])
+    expect(review.rejected).toEqual([{ pid: 42, reason: '用途不明，跳过。' }])
+    expect(stripStructuredBlocks('已完成。<dsh-pc-manager-memory-review>{}</dsh-pc-manager-memory-review>')).toBe('已完成。')
   })
 
   it('normalizes a scoped scan report', () => {
@@ -94,6 +133,8 @@ describe('safety prompts', () => {
     expect(prompt).toContain('"path": "C:\\\\fixture"')
     expect(prompt).toContain('唯一允许的文件扫描边界')
     expect(prompt).toContain('不得自行扩展')
+    expect(prompt).toContain('⟦PATH⟧')
+    expect(prompt).toContain('description、reason、evidence、detail')
   })
 
   it('requires the auditor to decide every selected item', () => {

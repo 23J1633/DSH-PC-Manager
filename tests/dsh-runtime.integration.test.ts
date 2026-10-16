@@ -359,6 +359,7 @@ describe('real DSH runtime in an isolated fixture', () => {
     const quarantine = join(root, 'quarantine')
     await mkdir(scope)
     await writeFile(join(scope, 'fixture.tmp'), 'plan fixture', 'utf8')
+    let planningCalls = 0
     let executionCalls = 0
     let executionPromptIncludedPlan = false
     const server = createServer(async (request, response) => {
@@ -368,7 +369,8 @@ describe('real DSH runtime in an isolated fixture', () => {
       }
       const body = await requestBody(request)
       const serialized = JSON.stringify(body)
-      if (serialized.includes('扫描计划模式')) {
+      if (planningCalls === 0 && serialized.includes('扫描计划模式')) {
+        planningCalls += 1
         const text = `<dsh-pc-manager-plan>${JSON.stringify({
           summary: '先确认范围，再核验缓存，最后整理结果。',
           steps: [
@@ -418,9 +420,28 @@ describe('real DSH runtime in an isolated fixture', () => {
       quarantineRetentionDays: 30, telemetryEnabled: false,
     }
     let lifetime = { ...EMPTY_TOKEN_USAGE }
+    const statistics = {
+      lifetimeRequests: 0,
+      lifetimeScans: 0,
+      lifetimeScannedItems: 0,
+      lifetimeCleanupRuns: 0,
+      lifetimeCleanedItems: 0,
+      daily: [],
+    }
     const fakeStore = {
       publicSettings: () => structuredClone(settings),
       apiKey: () => 'isolated-test-key',
+      lifetimeUsage: () => ({ ...lifetime }),
+      statistics: () => structuredClone(statistics),
+      recordRequest: async () => {
+        statistics.lifetimeRequests += 1
+        return structuredClone(statistics)
+      },
+      recordScan: async (scannedItems: number) => {
+        statistics.lifetimeScans += 1
+        statistics.lifetimeScannedItems += scannedItems
+        return structuredClone(statistics)
+      },
       addUsage: async (delta: TokenUsage) => {
         lifetime = addTokenUsage(lifetime, delta)
         return { ...lifetime }

@@ -1,3 +1,4 @@
+const { existsSync } = require('node:fs')
 const { join, resolve } = require('node:path')
 const { pathToFileURL } = require('node:url')
 
@@ -14,5 +15,9 @@ if (require.main === module) {
 } else {
   module.exports = async context => {
     await validate(join(context.appOutDir, 'resources', 'app'))
+    const patchPath = join(context.appOutDir, 'resources', 'dsh', 'pc-manager.patch.yml')
+    if (!existsSync(patchPath)) {
+      throw new Error(`Packaged DSH system patch is missing: ${patchPath}`)
+    }
   }
 }

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import type { CleanupAuditDecision, CleanupAuditReport, CleanupReport, CleanupResultItem, OperationPlan, OperationPlanStep, RiskItem, RiskKind, ScanKind, Severity } from '../shared/types.js'
+import type { CleanupAuditDecision, CleanupAuditReport, CleanupReport, CleanupResultItem, InstalledSoftwareItem, MemoryOverview, MemoryProcessCandidate, OperationPlan, OperationPlanStep, RiskItem, RiskKind, ScanKind, Severity } from '../shared/types.js'
 
 const RISK_KINDS = new Set<RiskKind>([
   'file',
@@ -12,6 +12,7 @@ const RISK_KINDS = new Set<RiskKind>([
   'registry',
   'network',
   'browser-extension',
+  'application',
   'other',
 ])
 const SEVERITIES = new Set<Severity>(['low', 'medium', 'high', 'critical'])
@@ -207,6 +208,7 @@ function normalizedRisk(value: unknown, scanKind: ScanKind): RiskItem | undefine
     ? entry.sizeBytes
     : undefined
   const cleanupHint = optionalText(entry.cleanupHint, 2000)
+  const applicationId = optionalText(entry.applicationId, 80)?.replace(/[^a-f0-9]/giu, '').slice(0, 16)
   return {
     id: providedId.length > 0 ? providedId : stableRiskId(scanKind, kind, target),
     scanKind,
@@ -222,6 +224,7 @@ function normalizedRisk(value: unknown, scanKind: ScanKind): RiskItem | undefine
     selectedByDefault: entry.selectedByDefault === true,
     reversible: entry.reversible === true,
     ...(cleanupHint === undefined ? {} : { cleanupHint }),
+    ...(applicationId === undefined || applicationId.length === 0 ? {} : { applicationId }),
   }
 }
 
@@ -263,7 +266,68 @@ export function parseOperationPlan(source: string): OperationPlan {
   }
 }
 
-export function parseScanReport(source: string, scanKind: ScanKind): ScanReport {
+export interface MemoryAgentReview {
+  summary: string
+  candidates: MemoryProcessCandidate[]
+}
+
+export interface MemoryOptimizationReview {
+  summary: string
+  approvedPids: number[]
+  rejected: Array<{ pid: number; reason: string }>
+}
+
+export function parseMemoryAgentReview(source: string, overview: MemoryOverview): MemoryAgentReview {
+  const result = record(markedJson(source, 'dsh-pc-manager-memory').value)
+  if (result === undefined) throw new Error('Agent 内存评估结果不是 JSON 对象')
+  const candidates = Array.isArray(result.candidates) ? result.candidates : []
+  const processByPid = new Map(overview.candidates.map(candidate => [candidate.pid, candidate]))
+  const seen = new Set<number>()
+  const reviewed: MemoryProcessCandidate[] = []
+  for (const candidate of candidates.slice(0, 40)) {
+    const entry = record(candidate)
+    if (entry === undefined) continue
+    const pid = Number(entry.pid)
+    const process = processByPid.get(pid)
+    if (process === undefined || seen.has(pid)) continue
+    seen.add(pid)
+    reviewed.push({ ...process, reason: text(entry.reason, 'Agent 认为该普通应用进程可供用户复核。', 800) })
+  }
+  return {
+    summary: text(result.summary, 'Agent 已完成内存候选项评估。', 1600),
+    candidates: reviewed,
+  }
+}
+
+export function parseMemoryOptimizationReview(source: string, selected: readonly MemoryProcessCandidate[]): MemoryOptimizationReview {
+  const result = record(markedJson(source, 'dsh-pc-manager-memory-review').value)
+  if (result === undefined) throw new Error('Agent 内存安全复核结果不是 JSON 对象')
+  const selectedPids = new Set(selected.map(process => process.pid))
+  const approvedPids: number[] = []
+  for (const value of Array.isArray(result.approvedPids) ? result.approvedPids.slice(0, 40) : []) {
+    const pid = Number(value)
+    if (Number.isSafeInteger(pid) && selectedPids.has(pid) && !approvedPids.includes(pid)) approvedPids.push(pid)
+  }
+  const reasons = new Map<number, string>()
+  for (const value of Array.isArray(result.rejected) ? result.rejected.slice(0, 40) : []) {
+    const entry = record(value)
+    if (entry === undefined) continue
+    const pid = Number(entry.pid)
+    if (Number.isSafeInteger(pid) && selectedPids.has(pid) && !approvedPids.includes(pid)) {
+      reasons.set(pid, text(entry.reason, 'Agent 未说明拒绝原因；为安全起见跳过该项。', 800))
+    }
+  }
+  const rejected = selected
+    .filter(process => !approvedPids.includes(process.pid))
+    .map(process => ({ pid: process.pid, reason: reasons.get(process.pid) ?? 'Agent 未明确批准该进程；为安全起见跳过该项。' }))
+  return {
+    summary: text(result.summary, 'Agent 已完成用户勾选进程的安全复核。', 1600),
+    approvedPids,
+    rejected,
+  }
+}
+
+export function parseScanReport(source: string, scanKind: ScanKind, installedSoftware: readonly InstalledSoftwareItem[] = []): ScanReport {
   const parsed = markedJson(source, 'dsh-pc-manager-result')
   const result = record(parsed.value)
   if (result === undefined) throw new Error('Agent 风险结果不是 JSON 对象')
@@ -271,13 +335,62 @@ export function parseScanReport(source: string, scanKind: ScanKind): ScanReport 
   const ids = new Set<string>()
   const risks: RiskItem[] = []
   for (const candidate of candidates.slice(0, 200)) {
-    const risk = normalizedRisk(candidate, scanKind)
+    let risk = normalizedRisk(candidate, scanKind)
     if (risk === undefined) continue
+    if (risk.kind === 'application') {
+      const software = risk.applicationId === undefined ? undefined : installedSoftware.find(item => item.id === risk?.applicationId)
+      if (software === undefined || scanKind !== 'disk') continue
+      const estimatedMegabytes = Math.round(software.sizeBytes / 1024 ** 2).toLocaleString('zh-CN')
+      risk = {
+        ...risk,
+        name: software.name,
+        target: software.installLocation,
+        description: `${risk.description} · 注册信息估算占用 ${estimatedMegabytes} MB。`,
+        sizeBytes: software.sizeBytes,
+        selectedByDefault: false,
+        reversible: false,
+        applicationId: software.id,
+        evidence: [...new Set([...risk.evidence, `Windows 卸载注册信息估算占用：${estimatedMegabytes} MB。`, `发布者：${software.publisher || '未记录'}；版本：${software.version || '未记录'}；安装日期：${software.installDate ?? '未记录'}。`, 'Windows 未提供可靠的最近使用记录，需用户自行确认是否仍在使用。'])].slice(0, 20),
+        cleanupHint: `applicationId=${software.id}; 卸载只能使用该软件登记的官方卸载程序；不得直接删除安装目录。若用户要求迁移，只能使用官方维护/迁移入口。`,
+      }
+    }
     let id = risk.id
     let suffix = 2
     while (ids.has(id)) id = `${risk.id}-${suffix++}`
     ids.add(id)
     risks.push(id === risk.id ? risk : { ...risk, id })
+  }
+  const applicationIds = new Set(risks.map(risk => risk.applicationId).filter((id): id is string => id !== undefined))
+  if (scanKind === 'disk') {
+    for (const software of installedSoftware) {
+      if (software.sizeBytes < 1024 ** 3 || applicationIds.has(software.id)) continue
+      const estimatedMegabytes = Math.round(software.sizeBytes / 1024 ** 2).toLocaleString('zh-CN')
+      const risk: RiskItem = {
+        id: `application-${software.id}`,
+        scanKind,
+        kind: 'application',
+        name: software.name,
+        target: software.installLocation,
+        description: `已安装软件，注册信息估算占用 ${Math.round(software.sizeBytes / 1024 ** 3 * 10) / 10} GB。`,
+        reason: '体积较大，可能是空间回收候选。Windows 未提供可靠的最近使用时间，无法仅凭安装日期判断是否长期未使用。',
+        severity: 'medium',
+        sizeBytes: software.sizeBytes,
+        recommendedAction: software.uninstallAvailable
+          ? '若确认不再需要，通过该软件登记的官方卸载程序移除；不要直接删除安装目录。'
+          : '没有找到官方卸载程序，请使用 Windows“已安装的应用”核验，无法确认前不要清理。',
+        evidence: [
+          `卸载注册信息估算占用：${estimatedMegabytes} MB。`,
+          `发布者：${software.publisher || '未记录'}；版本：${software.version || '未记录'}；安装日期：${software.installDate ?? '未记录'}。`,
+          'Windows 未提供可靠的最近使用记录，需用户自行确认是否仍在使用。',
+        ],
+        selectedByDefault: false,
+        reversible: false,
+        applicationId: software.id,
+        cleanupHint: `applicationId=${software.id}; uninstallAvailable=${software.uninstallAvailable}; maintenanceAvailable=${software.maintenanceAvailable}; only use official uninstall or migration entry points.`,
+      }
+      risks.push(risk)
+      ids.add(risk.id)
+    }
   }
   risks.sort((left, right) => SEVERITY_ORDER[left.severity] - SEVERITY_ORDER[right.severity]
     || (right.sizeBytes ?? -1) - (left.sizeBytes ?? -1)
@@ -378,5 +491,6 @@ export function stripStructuredBlocks(source: string): string {
     .replace(/<dsh-pc-manager-result>[\s\S]*?<\/dsh-pc-manager-result>/gi, '')
     .replace(/<dsh-pc-manager-audit>[\s\S]*?<\/dsh-pc-manager-audit>/gi, '')
     .replace(/<dsh-pc-manager-cleanup>[\s\S]*?<\/dsh-pc-manager-cleanup>/gi, '')
+    .replace(/<dsh-pc-manager-memory(?:-review)?>[\s\S]*?<\/dsh-pc-manager-memory(?:-review)?>/gi, '')
     .trim()
 }
